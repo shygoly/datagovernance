@@ -244,7 +244,7 @@ defineExpose({ open })
             </el-table-column>
             <el-table-column label="主键" width="60">
               <template #default="{ row }">
-                <el-icon v-if="row.primaryKey" color="#e6a23c"><Key /></el-icon>
+                <el-icon v-if="row.primaryKey" color="var(--dg-warning)"><Key /></el-icon>
               </template>
             </el-table-column>
             <el-table-column label="可空" width="60">

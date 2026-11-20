@@ -1,6 +1,7 @@
 import { http } from './request'
 import { useAuthStore } from '@/stores/auth'
 import type {
+  AgentActionProposal,
   AgentConversation,
   AgentConversationSummary,
   AgentStreamEvent,
@@ -37,6 +38,18 @@ export const agentApi = {
 
   abort(id: string): Promise<{ aborted: boolean }> {
     return http.post<{ aborted: boolean }>(`/insight/agent/conversations/${id}/abort`)
+  },
+
+  listProposals(params?: { conversationId?: string; status?: string }): Promise<AgentActionProposal[]> {
+    return http.get<AgentActionProposal[]>('/insight/agent/proposals', { params })
+  },
+
+  confirmProposal(id: string, payload: { payloadDigest?: string; note?: string } = {}): Promise<AgentActionProposal> {
+    return http.post<AgentActionProposal>(`/insight/agent/proposals/${id}/confirm`, payload)
+  },
+
+  rejectProposal(id: string, payload: { note?: string } = {}): Promise<AgentActionProposal> {
+    return http.post<AgentActionProposal>(`/insight/agent/proposals/${id}/reject`, payload)
   },
 }
 

@@ -36,6 +36,7 @@ import DetailTabs, { type DetailTab } from '@/components/insight/DetailTabs.vue'
 import MetadataPanel from '@/components/insight/MetadataPanel.vue'
 import SensitivityBadge from '@/components/insight/SensitivityBadge.vue'
 import StatusTag from '@/components/insight/StatusTag.vue'
+import SemanticImpactDrawer from '@/components/semantic/SemanticImpactDrawer.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -103,6 +104,13 @@ const lineageGraph = ref<LineageGraph>({ nodes: [], edges: [] })
 
 const columnDrawerVisible = ref(false)
 const selectedColumn = ref<CatalogColumn | null>(null)
+const semanticImpactVisible = ref(false)
+const semanticImpactColumnId = ref<string | undefined>(undefined)
+
+function openSemanticImpact(columnId?: string) {
+  semanticImpactColumnId.value = columnId
+  semanticImpactVisible.value = true
+}
 
 const dataset = computed(() => detail.value?.dataset ?? null)
 const columns = computed(() => detail.value?.columns ?? [])
@@ -590,6 +598,13 @@ onMounted(async () => {
     >
       <template #actions>
         <el-button :disabled="!detail" @click="copyLink">复制链接</el-button>
+        <el-button
+          v-if="auth.hasPermission('metadata:semantic:read')"
+          :disabled="!detail"
+          @click="openSemanticImpact()"
+        >
+          语义影响
+        </el-button>
         <el-button type="primary" :disabled="!detail" @click="openLineage()">打开血缘</el-button>
       </template>
     </PageHeader>
@@ -1199,10 +1214,23 @@ onMounted(async () => {
         </div>
         <div class="asset-detail__drawer-actions">
           <el-button type="primary" plain @click="openLineage(selectedColumn.id)">查看血缘</el-button>
+          <el-button
+            v-if="auth.hasPermission('metadata:semantic:read')"
+            @click="openSemanticImpact(selectedColumn.id)"
+          >
+            语义影响
+          </el-button>
           <el-button @click="openSensitivityReview()">查看敏感标签</el-button>
         </div>
       </template>
     </el-drawer>
+
+    <SemanticImpactDrawer
+      v-model:visible="semanticImpactVisible"
+      :dataset-id="semanticImpactColumnId ? undefined : assetId"
+      :column-id="semanticImpactColumnId"
+      :title="semanticImpactColumnId ? '字段语义影响分析' : '数据表语义影响分析'"
+    />
   </div>
 </template>
 

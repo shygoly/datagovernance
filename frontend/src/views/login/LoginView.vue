@@ -115,7 +115,7 @@ async function onSubmit() {
   margin-top: 6px;
   text-align: center;
   font-size: 12px;
-  color: #909399;
+  color: var(--dg-text-muted);
 }
 
 .login__submit {
@@ -124,7 +124,7 @@ async function onSubmit() {
 
 .login__hint {
   font-size: 12px;
-  color: #909399;
+  color: var(--dg-text-muted);
   line-height: 1.6;
 }
 </style>

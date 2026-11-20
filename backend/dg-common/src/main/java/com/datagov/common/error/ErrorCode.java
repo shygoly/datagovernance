@@ -77,6 +77,12 @@ public enum ErrorCode {
     // “现在用不了问数”,而不是请求参数错。
     GOV_INSIGHT_FAILED("GOV_INSIGHT_FAILED", 502, "智能问数失败"),
     GOV_INSIGHT_NOT_CONFIGURED("GOV_INSIGHT_NOT_CONFIGURED", 503, "智能问数服务未配置"),
+    GOV_AGENT_DISABLED("GOV_AGENT_DISABLED", 503, "智能体已被控制面急停或禁用"),
+    GOV_AGENT_QUOTA_EXCEEDED("GOV_AGENT_QUOTA_EXCEEDED", 429, "已超出当前空间智能体配额限制"),
+    GOV_PROPOSAL_NOT_FOUND("GOV_PROPOSAL_NOT_FOUND", 404, "操作提案不存在"),
+    GOV_PROPOSAL_STATE("GOV_PROPOSAL_STATE", 409, "操作提案当前状态不允许该操作"),
+    GOV_FACT_NOT_FOUND("GOV_FACT_NOT_FOUND", 404, "治理事实不存在"),
+    GOV_FACT_STATE("GOV_FACT_STATE", 409, "治理事实当前状态不允许该操作"),
 
     // ── Metadata ───────────────────────────────────────────────
     MTD_DATASOURCE_NOT_FOUND("MTD_DATASOURCE_NOT_FOUND", 404, "数据源不存在"),
@@ -111,6 +117,11 @@ public enum ErrorCode {
     MTD_ACCESS_REQUEST_STATE("MTD_ACCESS_REQUEST_STATE", 409, "访问申请状态不允许该操作"),
     MTD_ACCESS_SELF_APPROVAL("MTD_ACCESS_SELF_APPROVAL", 403, "不能审批自己的访问申请"),
     MTD_ACCESS_GRANT_NOT_FOUND("MTD_ACCESS_GRANT_NOT_FOUND", 404, "访问授权不存在"),
+    MTD_SEMANTIC_OBJECT_NOT_FOUND("MTD_SEMANTIC_OBJECT_NOT_FOUND", 404, "语义对象不存在"),
+    MTD_SEMANTIC_CODE_DUPLICATED("MTD_SEMANTIC_CODE_DUPLICATED", 409, "同空间下语义对象编码已存在"),
+    MTD_SEMANTIC_INVALID("MTD_SEMANTIC_INVALID", 400, "语义定义或知识图谱配置不合法"),
+    MTD_SEMANTIC_STATE("MTD_SEMANTIC_STATE", 409, "语义对象状态不允许该操作"),
+    MTD_SEMANTIC_COMPILE_FAILED("MTD_SEMANTIC_COMPILE_FAILED", 400, "语义查询编译失败"),
 
     // ── Data(连接器)────────────────────────────────────────────
     DAT_CONNECTOR_NOT_FOUND("DAT_CONNECTOR_NOT_FOUND", 400, "没有匹配的连接器实现"),

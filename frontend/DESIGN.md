@@ -30,7 +30,7 @@
 
 - 在 `backend/` 里写前端样式；
 - 绕过 Element Plus 重新造一套基础组件；
-- 把 SuperSonic 的 UI 直接嵌成主界面（只作为可选过渡）。
+- 绕过平台 `/api/v1` 直连任何外部 BI/数据库或将 SuperSonic UI 嵌为界面（SuperSonic 已彻底退场）。
 
 ## 3. 设计元语（Meta-language）
 
@@ -49,6 +49,10 @@
 | Density | 表格/表单的紧凑程度 | `size="small"` + 统一行高 |
 | Elevation | 层级阴影 | Element Plus 默认，不额外堆阴影 |
 | Radius | 圆角 | `--dg-radius` / `--dg-radius-lg` |
+| Shell | 应用壳层（侧边栏 + 顶栏 + 主画布 + AgentDock） | `layouts/MainLayout.vue` |
+| Breadcrumb | 顶栏多级路径导航（菜单树父子链 + 详情父路由） | `MainLayout.vue` 顶栏左侧 |
+| Overlay | 分层浮层（Toast / 二次确认 / 短弹窗 / 抽屉 / 宿主审批） | `utils/confirm.ts`、`el-dialog`、`el-drawer` |
+| HostConsent | C7 宿主独立高危确认视图（不可被 Agent 篡改） | `components/agent/AgentConsentDialog.vue` |
 
 新词先加到本表，再写代码；不要用“那个灰蓝色的东西”这类不可检索的描述。
 
@@ -111,11 +115,12 @@
 - 页面主块之间用 `16px`，卡片内部用 `12px`；
 - 复杂页面先分「页头 → 概览 → 主表 → 详情/抽屉」。
 
-## 5. 布局骨架
+## 5. 布局骨架与壳层交互（App Shell）
 
 ```text
 ┌─────────────────────────────────────────────┐
 │ Sidebar 220px │ Topbar 60px                  │
+│ (MenuTree)    │ [Breadcrumb] [WS] [UserMenu] │
 │               ├─────────────────────────────┤
 │               │ Main: .page-container        │
 │               │   page header                │
@@ -125,9 +130,14 @@
 └─────────────────────────────────────────────┘
 ```
 
-- 侧边栏由后端菜单树驱动，不硬编码完整导航；
-- 顶栏显示面包屑、空间选择、用户菜单；
-- 主内容 `overflow: auto`，表格横向滚动留在卡片内部。
+- **侧边栏菜单（NavigationMenu）**：由后端 `pf_permission` 菜单树驱动（`MenuTree.vue`），启用 `unique-opened`，禁止在前端硬编码完整导航；详情页通过路由 `meta.parentPath` 保持对应父菜单高亮；
+- **面包屑（Breadcrumb）**：由后端菜单树自动反查当前路由父子路径生成（如 `数据资产 / 语义本体`）；详情页（如 `/metadata/assets/:id`）拼接 `meta.parentPath` 形成可回退的多级路径（如 `数据资产 / 数据目录 / 资产详情`），中间路由级可点击，末级当前页不可点；
+- **登录 / 退出 / 切换空间（Session Shell）**：
+  - 登录页（`/login`）为独立全屏画布，不挂载 `MainLayout`；
+  - 401/令牌失效时由 `api/request.ts` 统一清理会话并带 `redirect` 跳 `/login`；
+  - 退出登录必须经 `confirmAction` 二次确认，成功后同时清空 `auth` 与 `agentSession` 并跳转 `/login`；
+  - 切换 Workspace（顶栏空间选择器）必须调用后端换票接口重签令牌，同时清空 `agentSession`、用 `workspaceId` 隔离 `KeepAlive` 缓存键并回 `/workbench`，防止跨租户数据残留；
+- **主内容区**：`overflow: auto`，表格横向滚动留在卡片内部；`MainLayout.vue` 严禁硬编码 `#263445` / `#fff` 等色值，统一使用 `var(--dg-sidebar-active)`、`var(--dg-surface)` 等 Token。
 
 ## 6. 组件规则
 
@@ -169,22 +179,34 @@
 - 长 SQL 横向滚动，不强行换行；
 - 只读展示，不提供可编辑 SQL 入口（除专用 SQL 控制台）。
 
-### 6.6 AI 问数
+### 6.6 AI 问数与交互图表
 
-- 输入区：数据集选择 + 多行问题 + 主按钮；
-- 结果区顺序：摘要 → 图表 → 结果表 → SQL；
-- 必须显示：`state`、耗时、是否截断、脱敏列；
-- 有敏感列时用警告条明确“哪些列被遮蔽”；
-- 图表：日期维度折线，其他维度柱状；没有数值列不出图；
+- 输入区：语义主题/数据集选择 + 多行问题 + 主按钮；
+- 结果区顺序：语义证据条（口径快照/排除条件/审计指纹）→ 摘要 → 交互图表 → 明细表 → SQL；
+- 必须显示：`state`、耗时、是否截断、脱敏列；有敏感列时用警告条明确“哪些列被遮蔽”；
+- 图表（C7 宿主白名单）：由后端 `ChartSpecRecommender` 确定性推荐，`InsightAnswerChart.vue` 渲染 10 类白名单图表（`kpi` / `bar` / `horizontal_bar` / `stacked_bar` / `line` / `area` / `pie` / `scatter` / `funnel` / `table`），多单位指标自动启用左右双 Y 轴，色板通过 `utils/chartTheme.ts` 读取 `--dg-*` Token；
+- 三层图表交互：L1 单击零延迟过滤下方明细表并展开紧凑上下文操作条；L2 沿维度 `hierarchy` 下钻直调 `/api/v1/insight/ask`（零 LLM）并附面包屑回退；L3 仅在显式点击「AI 归因分析」时交由 Pi Agent；
 - 导出按钮只在有结果时出现，并受 `insight:export` 权限控制；
-- 看板：保存问题定义，不保存结果快照；刷新时重新问数。
+- 看板：将问题定义、`chartSpec` 与 `executedSpec` 固化至 `layoutJson`，刷新时优先走确定性语义编译（零 LLM）。
 
 ### 6.7 看板
 
-- 左侧看板列表，右侧详情/问题项；
+- 左侧看板列表，右侧详情/问题项；刷新结果卡片以“交互图表 + 明细表”呈现并支持卡片内 L1 联动、L2 下钻与跳转 L3 归因；
 - 版本、刷新、ACL 是明确动作，不藏在右键菜单；
 - 自动刷新默认关闭，开启时显示 60s 节奏；
 - 单题失败显示错误，不阻塞其他题。
+
+### 6.8 浮层与弹出框分层规约（Overlay Matrix）
+
+所有弹出与浮层交互必须按以下 5 级严格选用，禁止混用：
+
+| 级别 | 组件 / API | 适用场景 | 硬约束 |
+|---|---|---|---|
+| L1 轻量反馈 | `ElMessage` | 成功提示、非阻断提醒 | 不可作为表单或接口错误的唯一展示手段 |
+| L2 二次确认 | `confirmAction` / `confirmDanger`（`utils/confirm.ts`） | 删除、退出登录、移出收件箱、停用、晋升确认 | **严禁页面直接裸调 `ElMessageBox.confirm`**，防止用户点取消产生未捕获 Promise rejection |
+| L3 短表单 / 轻预览 | `el-dialog` | 1–5 字段的新建/保存、版本快照只读查看 | 宽度 `460px–560px`，取消在左、提交在右，提交按钮绑定 `:loading` |
+| L4 详情 / 复杂配置 | `el-drawer` | 对象详情审阅、ACL 授权、目录浏览、多 Tab 编辑 | 避免弹窗套弹窗；保持列表上下文不丢失 |
+| L5 AI 高危审批（C7） | `AgentConsentDialog` | Agent 提案的写操作、权限变更、发布 | 宿主独立渲染、不可被 Agent 篡改；严禁在聊天流中口头确认 |
 
 ## 7. 导航与权限
 
@@ -215,12 +237,12 @@
 
 ```text
 只改 frontend/。使用 Vue 3 + TypeScript + Element Plus。
-遵守 frontend/DESIGN.md 的 Governed Calm 与 design tokens；
-使用 var(--dg-*) 和 .page-container，不写死颜色。
-页面结构：page header → filters/stats → card/table → detail。
+遵守 frontend/DESIGN.md 的 Governed Calm、App Shell 与 Overlay 分层规约；
+使用 var(--dg-*) 和 .page-container，不写死颜色；二次确认统一用 confirmAction / confirmDanger。
+页面结构：page header → filters/stats → card/table → detail drawer。
 表格紧凑、状态用 el-tag、错误不只靠 toast。
-AI 问数结果顺序：摘要 → 图表 → 表格 → SQL；显示脱敏列。
-不要绕过 RBAC 菜单；不要直连 SuperSonic；不要在浏览器里放服务账号口令。
+AI 问数结果顺序：证据条 → 摘要 → 10 类白名单交互图表 → 明细表 → SQL；显示脱敏列。
+不要绕过 RBAC 菜单；不要生成可执行前端代码（C7）；不要在浏览器里放服务账号口令。
 改完运行 pnpm type-check && pnpm build。
 ```
 
@@ -228,23 +250,25 @@ AI 问数结果顺序：摘要 → 图表 → 表格 → SQL；显示脱敏列�
 
 Do：
 
-- 用 `var(--dg-*)`；
+- 用 `var(--dg-*)`（含 `layouts/`、`views/`、`components/`）；
 - 用 `el-card shadow="never"`；
 - 用 `el-table size="small"`；
 - 用语义色表达状态；
 - 用 `.page-container`；
+- 用 `confirmAction` / `confirmDanger` 做二次确认；
 - 用 `formatDateTime` 统一时间格式；
-- 用后端菜单/权限驱动导航；
-- 改完跑 `pnpm type-check` 与 `pnpm build`。
+- 用后端菜单/权限驱动导航与多级面包屑；
+- 改完跑 `pnpm type-check`、`pnpm build` 与 `python3 scripts/verify-primitives.py --strict`。
 
 Don't：
 
-- 不写死 `#409eff` / `#f5f7fa`；
+- 不写死 `#409eff` / `#f5f7fa` / `#263445`；
+- 不在视图/组件中直接裸调 `ElMessageBox.confirm`；
 - 不用紫色渐变、玻璃拟态、营销卡片；
 - 不把完整详情塞在长表格下面；
 - 不只靠 toast 报错；
 - 不把凭据/密钥写进前端代码或日志；
-- 不让浏览器直连 SuperSonic；
+- 不绕过 `AgentConsentDialog` 在聊天流内完成高危写操作确认（C7）；
 - 不绕过 `meta.permission` 直接进页面。
 
 ## 12. 变更协议

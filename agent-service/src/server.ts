@@ -27,7 +27,28 @@ app.get('/health', (_req, res) => {
     ok: true,
     model: agentRuntime.modelId,
     dataDir: config.dataDir,
+    skills: agentRuntime.skills().map((s) => s.name),
   })
+})
+
+app.get('/skills', (_req, res) => {
+  res.json(agentRuntime.skills().map((s) => ({
+    name: s.name,
+    description: s.description,
+    allowedTools: s.allowedTools,
+  })))
+})
+
+/** 控制面 Kill Switch 回调：立即中止所有（或指定空间）在途 Agent 轮次。 */
+app.post('/control/abort-all', (req, res) => {
+  const token = String(req.header('X-Agent-Token') ?? '')
+  if (config.agentToken && token !== config.agentToken) {
+    res.status(403).json({ error: 'Agent 服务令牌无效' })
+    return
+  }
+  const workspaceId = req.body?.workspaceId ? String(req.body.workspaceId) : undefined
+  const abortedCount = agentRuntime.abortAll(workspaceId)
+  res.json({ abortedCount, workspaceId: workspaceId ?? 'ALL' })
 })
 
 app.get('/conversations', (req, res) => {
@@ -113,12 +134,15 @@ app.post('/conversations/:id/messages', async (req, res) => {
   store.save(conversation)
 
   void runTurn(conversation, turn, text, {
+    conversationId: conversation.id,
     workspaceId: conversation.workspaceId,
     userId: conversation.userId,
     platformAdmin: conversation.platformAdmin,
     username: conversation.username,
     datasetId: conversation.datasetId,
     datasetLabel: conversation.datasetLabel,
+    maxToolCallsPerTurn: optionalNumber(req.body?.maxToolCallsPerTurn),
+    maxConsecutiveErrors: optionalNumber(req.body?.maxConsecutiveErrors),
   }, store, bus).catch((error) => {
     conversation.running = false
     turn.status = 'error'

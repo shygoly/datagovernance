@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import { credentialApi } from '@/api/credential'
+import { confirmDanger } from '@/utils/confirm'
 import { CREDENTIAL_AUTH_TYPE_LABELS, type Credential, type CredentialAuthType } from '@/types/credential'
 
 const loading = ref(false)
@@ -77,11 +78,13 @@ async function onSubmit() {
 }
 
 async function onDelete(row: Credential) {
-  await ElMessageBox.confirm(
+  const confirmed = await confirmDanger(
     `确定删除凭据「${row.name}」吗?引用它的数据源将无法连接。`,
     '删除凭据',
-    { type: 'warning' },
   )
+  if (!confirmed) {
+    return
+  }
   await credentialApi.remove(row.id)
   ElMessage.success('已删除')
   await load()

@@ -14,6 +14,7 @@ import com.datagov.common.error.ErrorCode;
 import com.datagov.common.id.Ids;
 import com.datagov.common.tenant.Caller;
 import com.datagov.common.tenant.WorkspaceContext;
+import com.datagov.metadata.service.SemanticQueryCompiler.SemanticQuerySpec;
 import com.datagov.platform.dto.UserView;
 import com.datagov.platform.service.UserService;
 import com.datagov.platform.service.WorkspaceService;
@@ -167,15 +168,32 @@ public class InsightDashboardService {
         DashboardDetail detail = get(id);
         List<RunItem> items = detail.items().stream().map(item -> {
             try {
+                SemanticQuerySpec savedSpec = extractSavedSemanticSpec(item.layoutJson());
                 InsightQueryService.Answer answer = queryService.ask(
                         new InsightQueryService.AskRequest(
-                                item.question(), item.datasetId(), null));
+                                item.question(), item.datasetId(), null, savedSpec));
                 return new RunItem(item.id(), item.question(), true, answer, null);
             } catch (RuntimeException e) {
                 return new RunItem(item.id(), item.question(), false, null, e.getMessage());
             }
         }).toList();
         return new RunResult(detail.id(), detail.name(), Instant.now(), items);
+    }
+
+    private SemanticQuerySpec extractSavedSemanticSpec(String layoutJson) {
+        if (layoutJson == null || layoutJson.isBlank()) {
+            return null;
+        }
+        try {
+            Map<String, Object> map = objectMapper.readValue(layoutJson, new TypeReference<>() {});
+            Object rawSpec = map.get("semanticSpec");
+            if (rawSpec == null) {
+                return null;
+            }
+            return objectMapper.convertValue(rawSpec, SemanticQuerySpec.class);
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     public DashboardView create(CreateRequest request) {

@@ -1,0 +1,66 @@
+{
+  "protocolVersion": "2026-07-28",
+  "server": {
+    "name": "datagovernance-mcp",
+    "endpoint": "/api/v1/mcp",
+    "transport": "stateless-http-jsonrpc",
+    "auth": "Bearer JWT + X-Workspace-Id (no shared service account)"
+  },
+  "tools": [
+    {
+      "name": "list_datasets",
+      "readOnly": true,
+      "requiredPermissions": ["insight:ask", "insight:read"],
+      "description": "列出当前 Workspace 可用的受治理语义数据集"
+    },
+    {
+      "name": "ask_data",
+      "readOnly": true,
+      "requiredPermissions": ["insight:ask"],
+      "description": "经平台原生语义问数网关发起自然语言问数（确定性编译 + 只读 + 自动脱敏 + 审计指纹）"
+    },
+    {
+      "name": "search_semantic_subgraph",
+      "readOnly": true,
+      "requiredPermissions": ["insight:ask", "metadata:semantic:read"],
+      "description": "在单一语义本体与知识图谱中做 k-Hop 受控子图检索（逐跳 ACL 剪枝）"
+    },
+    {
+      "name": "list_dimensions",
+      "readOnly": true,
+      "requiredPermissions": ["metadata:semantic:read", "insight:ask"],
+      "description": "按模型列出已登记的规范维度对象（canonical ID + 类型 + 描述），供 LLM 接地选 ID 而非拼写裸字符串"
+    },
+    {
+      "name": "list_metrics",
+      "readOnly": true,
+      "requiredPermissions": ["metadata:semantic:read", "insight:ask"],
+      "description": "按模型列出已登记的规范度量对象（canonical ID + 类型 + 六维摘要），供 LLM 接地选 ID"
+    },
+    {
+      "name": "resolve_ref",
+      "readOnly": true,
+      "requiredPermissions": ["metadata:semantic:read", "insight:ask"],
+      "description": "在当前模型命名空间解析短名引用，返回规范 ID 或 UNRESOLVED_REF/AMBIGUOUS_REF 候选列表"
+    },
+    {
+      "name": "propose_local_onboarding",
+      "readOnly": false,
+      "hostConsentRequired": true,
+      "requiredPermissions": ["metadata:datasource:create"],
+      "description": "生成创建本地 Parquet 数据源的 PENDING 宿主确认提案，绝不直接落库"
+    }
+  ],
+  "resources": [
+    {
+      "uri": "dg://catalog/sources",
+      "mimeType": "application/json",
+      "requiredPermissions": ["metadata:asset:read", "metadata:catalog:read", "insight:ask"]
+    },
+    {
+      "uri": "dg://semantic/objects",
+      "mimeType": "application/json",
+      "requiredPermissions": ["metadata:semantic:read", "insight:ask"]
+    }
+  ]
+}

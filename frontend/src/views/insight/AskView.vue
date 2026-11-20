@@ -1,15 +1,20 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { agentApi, streamAgentEvents } from '@/api/agent'
 import { insightApi } from '@/api/insight'
 import { useAuthStore } from '@/stores/auth'
 import { useAgentSessionStore } from '@/stores/agentSession'
-import type { AgentConversation, AgentConversationSummary, AgentStreamEvent, AgentTurn } from '@/types/agent'
-import type { InsightAnswer, InsightDashboard, InsightDataset } from '@/types/insight'
+import type { AgentActionProposal, AgentConversation, AgentConversationSummary, AgentStreamEvent, AgentTurn } from '@/types/agent'
+import type { InsightAnswer, InsightChartSpec, InsightDashboard, InsightDataset } from '@/types/insight'
 import { formatDateTime } from '@/utils/format'
-import InsightAnswerChart from '@/components/insight/InsightAnswerChart.vue'
+import InsightAnswerChart, {
+  type ChartBreadcrumb,
+  type ChartDrilldownEvent,
+  type ChartFilterSelection,
+} from '@/components/insight/InsightAnswerChart.vue'
+import AgentConsentDialog from '@/components/agent/AgentConsentDialog.vue'
 
 defineOptions({ name: 'AskView' })
 
@@ -21,6 +26,7 @@ defineOptions({ name: 'AskView' })
  * 事件通过 fetch + SSE 读取，因为 EventSource 不能带 Authorization 头。
  */
 const auth = useAuthStore()
+const route = useRoute()
 const router = useRouter()
 const agentSession = useAgentSessionStore()
 
@@ -48,14 +54,18 @@ const examples = [
 ]
 
 const TOOL_LABELS: Record<string, string> = {
-  list_datasets: '列出数据集',
-  ask_data: '数据查询',
-  create_local_datasource: '创建本地数据源',
-  update_local_datasource: '修改本地数据源',
+  activate_skill: '激活技能规程',
+  list_datasets: '列出语义主题',
+  ask_data: '语义问数',
+  search_semantic_subgraph: '检索语义知识子图',
+  get_semantic_object: '查看语义对象',
+  execute_semantic_query: '执行结构化语义查询',
+  create_local_datasource: '提案：创建本地数据源',
+  update_local_datasource: '提案：修改本地数据源',
   test_datasource: '测试连接',
   list_catalog_sources: '列出目录来源',
-  create_parquet_catalog_source: '创建目录来源',
-  refresh_catalog_source: '采集目录',
+  create_parquet_catalog_source: '提案：创建目录来源',
+  refresh_catalog_source: '提案：采集目录',
   navigate_workspace: '切换工作页面',
 }
 
@@ -70,6 +80,93 @@ const saveNewName = ref('')
 const saveTarget = ref<AgentTurn | null>(null)
 const exportingId = ref('')
 const exportingXlsxId = ref('')
+const turnFilters = ref<Record<string, ChartFilterSelection | null>>({})
+const turnDrillStacks = ref<Record<string, Array<{ label: string; answer: InsightAnswer }>>>({})
+const turnDrilling = ref<Record<string, boolean>>({})
+const turnChartSpecs = ref<Record<string, InsightChartSpec>>({})
+
+function resetTurnChartStates() {
+  turnFilters.value = {}
+  turnDrillStacks.value = {}
+  turnDrilling.value = {}
+  turnChartSpecs.value = {}
+}
+
+function breadcrumbsOf(turn: AgentTurn): ChartBreadcrumb[] {
+  const stack = turnDrillStacks.value[turn.id]
+  if (!stack || stack.length <= 1) {
+    return []
+  }
+  return stack.map((item) => ({ label: item.label }))
+}
+
+function filteredRowsOf(turn: AgentTurn): Record<string, unknown>[] {
+  const rows = turn.answer?.rows ?? []
+  const filter = turnFilters.value[turn.id]
+  if (!filter) {
+    return rows
+  }
+  return rows.filter((row) => String(row[filter.field] ?? '') === filter.value)
+}
+
+function onChartFilterSelect(turnId: string, selection: ChartFilterSelection | null) {
+  turnFilters.value[turnId] = selection
+}
+
+function clearTurnFilter(turnId: string) {
+  turnFilters.value[turnId] = null
+}
+
+function onChartSpecChange(turnId: string, spec: InsightChartSpec) {
+  turnChartSpecs.value[turnId] = spec
+}
+
+async function onChartDrilldown(turn: AgentTurn, event: ChartDrilldownEvent) {
+  if (!turn.answer || turnDrilling.value[turn.id]) {
+    return
+  }
+  if (!turnDrillStacks.value[turn.id]?.length) {
+    turnDrillStacks.value[turn.id] = [{ label: '初始结果', answer: turn.answer }]
+  }
+  turnDrilling.value[turn.id] = true
+  try {
+    const drilled = await insightApi.ask({
+      question: event.label,
+      dataSetId: turn.datasetId ?? conversation.value?.datasetId ?? datasetId.value,
+      semanticSpec: event.spec,
+    })
+    turnDrillStacks.value[turn.id] = [
+      ...turnDrillStacks.value[turn.id],
+      { label: event.label, answer: drilled },
+    ]
+    turn.answer = drilled
+    turnFilters.value[turn.id] = null
+  } catch (drillError: any) {
+    ElMessage.error(drillError?.message || '下钻查询失败')
+  } finally {
+    turnDrilling.value[turn.id] = false
+  }
+}
+
+function onChartBreadcrumbBack(turn: AgentTurn, index: number) {
+  const stack = turnDrillStacks.value[turn.id]
+  if (!stack || index < 0 || index >= stack.length) {
+    return
+  }
+  const sliced = stack.slice(0, index + 1)
+  turn.answer = sliced[sliced.length - 1].answer
+  turnFilters.value[turn.id] = null
+  if (sliced.length <= 1) {
+    delete turnDrillStacks.value[turn.id]
+  } else {
+    turnDrillStacks.value[turn.id] = sliced
+  }
+}
+
+function onChartAskFollowup(prompt: string) {
+  useExample(prompt)
+  ElMessage.info('已填入 AI 归因分析问题，按 Enter 即可发送')
+}
 
 const isRunning = computed(() => sending.value || turns.value.some((turn) => turn.status === 'running'))
 const canAsk = computed(() => question.value.trim().length > 0 && !isRunning.value)
@@ -153,6 +250,7 @@ async function openConversation(id: string) {
   error.value = ''
   try {
     const detail = await agentApi.get(id)
+    resetTurnChartStates()
     conversation.value = detail
     turns.value = detail.turns ?? []
     lastSeq = Math.max(0, ...(detail.events ?? []).map((event) => event.seq))
@@ -166,6 +264,9 @@ async function openConversation(id: string) {
       datasetLabel: detail.datasetLabel,
     })
     syncSession()
+    void agentApi.listProposals({ conversationId: detail.id, status: 'PENDING' })
+      .then((list) => agentSession.setProposals(list))
+      .catch(() => undefined)
     connectStream()
     await scrollToEnd()
   } catch {
@@ -177,6 +278,7 @@ async function openConversation(id: string) {
 
 async function newConversation() {
   stopStream()
+  resetTurnChartStates()
   conversation.value = null
   turns.value = []
   lastSeq = 0
@@ -316,11 +418,25 @@ function applyEvent(event: AgentStreamEvent) {
       sending.value = false
       break
     }
+    case 'consent_required': {
+      const proposal = event.proposal as AgentActionProposal | undefined
+      if (proposal?.id) {
+        agentSession.pushProposal(proposal)
+      }
+      break
+    }
+    case 'circuit_breaker': {
+      const turn = ensureTurn(turnId, '')
+      turn.status = 'error'
+      turn.error = String(event.reason ?? '触发控制面熔断')
+      sending.value = false
+      break
+    }
     case 'navigate': {
       const route = String(event.route ?? '')
       const label = String(event.label ?? route)
       const query = (event.query ?? {}) as Record<string, string>
-      const allowed = ['/metadata/datasources', '/metadata/catalog', '/insight/ask']
+      const allowed = ['/metadata/datasources', '/metadata/catalog', '/metadata/semantic', '/insight/ask']
       if (route && allowed.includes(route)) {
         agentSession.setNavigate({ route, label, query })
         // KeepAlive 下 AskView 即使被切走也还活着，所以这里仍能跟随后续步骤切页。
@@ -449,6 +565,10 @@ function toolState(tool: { status: string }): { label: string; type: 'success' |
     : { label: '完成', type: 'success' }
 }
 
+function onProposalResolved(proposal: AgentActionProposal) {
+  agentSession.removeProposal(proposal.id)
+}
+
 function columnsOf(answer: InsightAnswer) {
   if (answer.columns?.length) {
     return answer.columns.map((column) => ({
@@ -497,9 +617,15 @@ async function saveToDashboard() {
     const created = await insightApi.createDashboard({ name: saveNewName.value.trim() })
     dashboardId = created.id
   }
+  const savedChartSpec = turnChartSpecs.value[target.id] ?? target.answer?.chartSpec ?? null
+  const savedSemanticSpec = target.answer?.executedSpec ?? null
   await insightApi.addDashboardItem(dashboardId, {
     question: target.question,
     datasetId: target.datasetId ?? conversation.value?.datasetId,
+    chartType: (savedChartSpec?.chartType || 'AUTO').toUpperCase(),
+    layoutJson: savedChartSpec || savedSemanticSpec
+      ? JSON.stringify({ chartSpec: savedChartSpec, semanticSpec: savedSemanticSpec })
+      : undefined,
   })
   ElMessage.success('已保存到看板')
   saveDialogVisible.value = false
@@ -542,6 +668,16 @@ function download(blob: Blob, extension: string) {
   link.click()
   URL.revokeObjectURL(url)
 }
+
+watch(
+  () => route.query.prompt,
+  (prompt) => {
+    if (typeof prompt === 'string' && prompt.trim()) {
+      question.value = prompt.trim()
+    }
+  },
+  { immediate: true },
+)
 
 onMounted(async () => {
   await Promise.all([loadDatasets(), loadConversations()])
@@ -683,6 +819,62 @@ onBeforeUnmount(() => {
               </div>
             </div>
 
+            <div
+              v-if="turn.answer?.semanticSnapshotRefs?.length || turn.answer?.auditFingerprint || turn.answer?.appliedExclusions?.length || turn.answer?.executionMode || turn.answer?.warehousesUsed?.length"
+              class="semantic-evidence-bar"
+            >
+              <el-tag v-if="turn.answer?.executionMode" size="small" type="primary">
+                {{ turn.answer.executionMode }}
+                <template v-if="turn.answer.federationEngine && turn.answer.federationEngine !== 'NONE'">
+                  · {{ turn.answer.federationEngine }}
+                </template>
+              </el-tag>
+              <el-tag
+                v-for="wh in turn.answer?.warehousesUsed || []"
+                :key="wh"
+                size="small"
+                type="success"
+              >
+                仓库: {{ wh }}
+              </el-tag>
+              <el-tag
+                v-for="refItem in turn.answer?.semanticSnapshotRefs || []"
+                :key="refItem"
+                size="small"
+                type="info"
+              >
+                {{ refItem }}
+              </el-tag>
+              <el-tag
+                v-for="ex in turn.answer?.appliedExclusions || []"
+                :key="ex"
+                size="small"
+                type="warning"
+              >
+                {{ ex }}
+              </el-tag>
+              <el-tag v-if="turn.answer?.auditFingerprint" size="small" type="success">
+                审计指纹 #{{ turn.answer.auditFingerprint.slice(0, 12) }}
+              </el-tag>
+            </div>
+
+            <div
+              v-if="turn.answer?.state === 'CLARIFY_NEEDED' && turn.answer?.clarifications?.length"
+              class="clarify-bar"
+            >
+              <span class="clarify-label">请选择期望口径继续查询：</span>
+              <el-button
+                v-for="opt in turn.answer.clarifications"
+                :key="opt.code"
+                size="small"
+                plain
+                type="primary"
+                @click="useExample(`按「${opt.name}」(${opt.code}) 口径：${turn.question}`)"
+              >
+                {{ opt.name }}（{{ opt.disambiguation }}）
+              </el-button>
+            </div>
+
             <el-collapse v-if="turn.thinking" class="thinking">
               <el-collapse-item title="思考过程" name="thinking">
                 <div class="thinking-text">{{ turn.thinking }}</div>
@@ -722,7 +914,16 @@ onBeforeUnmount(() => {
             />
 
             <template v-if="turn.answer">
-              <InsightAnswerChart :answer="turn.answer" />
+              <InsightAnswerChart
+                :answer="turn.answer"
+                :breadcrumbs="breadcrumbsOf(turn)"
+                :drilling="Boolean(turnDrilling[turn.id])"
+                @filter-select="(sel) => onChartFilterSelect(turn.id, sel)"
+                @drilldown="(ev) => onChartDrilldown(turn, ev)"
+                @breadcrumb-back="(idx) => onChartBreadcrumbBack(turn, idx)"
+                @ask-followup="onChartAskFollowup"
+                @spec-change="(spec) => onChartSpecChange(turn.id, spec)"
+              />
               <el-alert
                 v-if="turn.answer.summary && !turn.text"
                 type="info"
@@ -730,8 +931,19 @@ onBeforeUnmount(() => {
                 class="agent-alert"
                 :title="turn.answer.summary"
               />
+              <div v-if="turnFilters[turn.id]" class="table-filter-bar">
+                <el-tag size="small" type="primary">
+                  图表联动筛选：{{ turnFilters[turn.id]!.fieldLabel }} = {{ turnFilters[turn.id]!.value }}
+                </el-tag>
+                <span class="text-muted">
+                  当前显示 {{ filteredRowsOf(turn).length }} / {{ turn.answer.rows.length }} 行
+                </span>
+                <el-button link size="small" type="primary" @click="clearTurnFilter(turn.id)">
+                  清除筛选
+                </el-button>
+              </div>
               <el-table
-                :data="turn.answer.rows"
+                :data="filteredRowsOf(turn)"
                 size="small"
                 border
                 max-height="360"
@@ -746,15 +958,38 @@ onBeforeUnmount(() => {
                   show-overflow-tooltip
                 />
               </el-table>
-              <el-collapse v-if="sqlOf(turn.answer)" class="answer-sql">
-                <el-collapse-item title="查看生成 SQL" name="sql">
-                  <pre>{{ sqlOf(turn.answer) }}</pre>
+              <el-collapse v-if="sqlOf(turn.answer) || turn.answer.warehouseSqls?.length" class="answer-sql">
+                <el-collapse-item
+                  :title="turn.answer.warehouseSqls?.length ? `查看多仓/联邦生成 SQL（${turn.answer.warehouseSqls.length} 段）` : '查看生成 SQL'"
+                  name="sql"
+                >
+                  <template v-if="turn.answer.warehouseSqls?.length">
+                    <div
+                      v-for="(pass, pIdx) in turn.answer.warehouseSqls"
+                      :key="`${pass.warehouseCode}-${pIdx}`"
+                      class="warehouse-sql-pass"
+                    >
+                      <div class="warehouse-sql-head">
+                        <el-tag size="small" type="info">{{ pass.warehouseName }}</el-tag>
+                        <el-tag v-if="pass.cohortCode" size="small" type="success">{{ pass.cohortCode }}</el-tag>
+                        <span class="text-muted">{{ pass.dialect }}</span>
+                      </div>
+                      <pre>{{ pass.sql }}</pre>
+                    </div>
+                  </template>
+                  <pre v-else>{{ sqlOf(turn.answer) }}</pre>
                 </el-collapse-item>
               </el-collapse>
             </template>
           </div>
         </div>
       </div>
+
+      <AgentConsentDialog
+        :proposal="agentSession.activeProposal"
+        @resolved="onProposalResolved"
+        @dismiss="() => {}"
+      />
 
       <footer class="composer">
         <el-input
@@ -1064,6 +1299,19 @@ onBeforeUnmount(() => {
   margin-top: var(--dg-space-sm);
 }
 
+.table-filter-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--dg-space-sm);
+  margin-top: var(--dg-space-sm);
+  padding: 6px var(--dg-space-sm);
+  background: var(--dg-surface-muted);
+  border: 1px solid var(--dg-border);
+  border-radius: var(--dg-radius);
+  font-size: 12px;
+}
+
 .answer-sql {
   margin-top: var(--dg-space-sm);
 }
@@ -1077,6 +1325,18 @@ onBeforeUnmount(() => {
   line-height: 1.6;
   background: var(--dg-surface-muted);
   border-radius: var(--dg-radius);
+}
+
+.warehouse-sql-pass + .warehouse-sql-pass {
+  margin-top: var(--dg-space-sm);
+}
+
+.warehouse-sql-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+  font-size: 12px;
 }
 
 .composer {
@@ -1094,6 +1354,24 @@ onBeforeUnmount(() => {
 
 .composer-error {
   margin-top: var(--dg-space-sm);
+}
+
+.semantic-evidence-bar,
+.clarify-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: var(--dg-space-sm);
+  padding: 6px var(--dg-space-sm);
+  background: var(--dg-surface-muted);
+  border: 1px solid var(--dg-border);
+  border-radius: var(--dg-radius);
+}
+
+.clarify-label {
+  font-size: 12px;
+  color: var(--dg-text-muted);
 }
 
 @media (max-width: 900px) {

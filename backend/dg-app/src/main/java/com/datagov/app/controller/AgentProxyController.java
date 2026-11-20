@@ -1,5 +1,7 @@
 package com.datagov.app.controller;
 
+import com.datagov.app.insight.AgentControlPlaneService;
+import com.datagov.app.insight.AgentControlPlaneService.EffectivePolicy;
 import com.datagov.app.web.RequirePermission;
 import com.datagov.common.error.BizException;
 import com.datagov.common.error.ErrorCode;
@@ -48,12 +50,15 @@ public class AgentProxyController {
             .build();
 
     private final ObjectMapper objectMapper;
+    private final AgentControlPlaneService controlPlane;
 
     @Value("${dg.insight.agent-base-url:http://127.0.0.1:8090}")
     private String agentBaseUrl;
 
-    public AgentProxyController(ObjectMapper objectMapper) {
+    public AgentProxyController(ObjectMapper objectMapper,
+                                AgentControlPlaneService controlPlane) {
         this.objectMapper = objectMapper;
+        this.controlPlane = controlPlane;
     }
 
     @GetMapping("/conversations")
@@ -71,6 +76,7 @@ public class AgentProxyController {
     @Operation(summary = "新建 Agent 会话")
     public ResponseEntity<String> create(@RequestBody(required = false) Map<String, Object> body) {
         Caller caller = WorkspaceContext.require();
+        controlPlane.requireAgentEnabled(caller.workspaceId());
         Map<String, Object> payload = body == null ? new LinkedHashMap<>() : new LinkedHashMap<>(body);
         payload.put("workspaceId", caller.workspaceId());
         payload.put("userId", caller.userId());
@@ -94,11 +100,14 @@ public class AgentProxyController {
                                        @RequestBody Map<String, Object> body) {
         requireOwnership(id);
         Caller caller = WorkspaceContext.require();
+        EffectivePolicy policy = controlPlane.requireAndConsumeTurn(caller.workspaceId());
         Map<String, Object> payload = body == null ? new LinkedHashMap<>() : new LinkedHashMap<>(body);
         // 旧会话可能还没存过 userId；每次发送都补齐，工具端点才能按真实用户鉴权。
         payload.put("userId", caller.userId());
         payload.put("platformAdmin", caller.platformAdmin());
         payload.put("username", caller.username());
+        payload.put("maxToolCallsPerTurn", policy.maxToolCallsPerTurn());
+        payload.put("maxConsecutiveErrors", policy.maxConsecutiveErrors());
         return forward("POST", "/conversations/" + encodePath(id) + "/messages", payload);
     }
 

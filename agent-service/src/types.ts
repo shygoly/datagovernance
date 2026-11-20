@@ -38,6 +38,7 @@ export interface Conversation {
   title: string
   datasetId?: number
   datasetLabel?: string
+  activeSkills?: string[]
   createdAt: string
   updatedAt: string
   messages: unknown[]
@@ -48,10 +49,26 @@ export interface Conversation {
 }
 
 export interface RunContext {
+  conversationId: string
   workspaceId: string
   userId?: string
   platformAdmin?: boolean
   username: string
   datasetId?: number
   datasetLabel?: string
+  maxToolCallsPerTurn?: number
+  maxConsecutiveErrors?: number
+}
+
+export interface ProposalSummary {
+  id: string
+  actionType: string
+  requiredPermission: string
+  title: string
+  summary: string
+  payload: Record<string, unknown>
+  payloadDigest: string
+  riskLevel: string
+  status: string
+  expiresAt: string
 }

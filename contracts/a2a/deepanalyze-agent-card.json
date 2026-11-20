@@ -1,0 +1,23 @@
+{
+  "protocolVersion": "1.0",
+  "name": "deepanalyze-report-agent",
+  "description": "外部分析结论智能体（只读聚合/样本，唯一受控写入为不可变 AnalysisReport）",
+  "version": "1.0.0",
+  "contractRef": "docs/analysis-report.md",
+  "authentication": {
+    "schemes": ["Bearer"],
+    "delegation": "User token required; created_by derived from WorkspaceContext"
+  },
+  "capabilities": {
+    "streaming": false,
+    "opaqueTasks": true,
+    "inconclusiveFirstClass": true
+  },
+  "skills": [
+    {
+      "id": "governed-analysis-report",
+      "name": "生成不可变带证据分析报告",
+      "writeChannel": "POST /api/v1/governance/analysis-reports"
+    }
+  ]
+}

@@ -9,12 +9,12 @@ import type {
   InsightDashboardItemUpdate,
   InsightDashboardRun,
   InsightDashboardVersion,
-  InsightSupersonicMapping,
   InsightDataset,
   InsightConfig,
   InsightPage,
   InsightQueryLog,
 } from '@/types/insight'
+import type { SemanticQuerySpec } from '@/types/semantic'
 
 export const insightApi = {
   config() {
@@ -23,7 +23,7 @@ export const insightApi = {
   datasets() {
     return http.get<InsightDataset[]>('/insight/datasets')
   },
-  ask(payload: { question: string; dataSetId?: number }) {
+  ask(payload: { question: string; dataSetId?: number; semanticSpec?: SemanticQuerySpec }) {
     return http.post<InsightAnswer>('/insight/ask', payload)
   },
   exportCsv(payload: { question: string; dataSetId?: number }) {
@@ -54,6 +54,7 @@ export const insightApi = {
     question: string
     datasetId?: number
     chartType?: string
+    layoutJson?: string
   }) {
     return http.post<InsightDashboardItem>(`/insight/dashboards/${id}/items`, payload)
   },
@@ -88,18 +89,5 @@ export const insightApi = {
       `/insight/dashboards/${id}/items/${itemId}`,
       payload,
     )
-  },
-  mappings() {
-    return http.get<InsightSupersonicMapping[]>('/insight/mappings')
-  },
-  saveMapping(payload: {
-    platformUsername: string
-    supersonicUsername: string
-    credentialId: string
-  }) {
-    return http.post<InsightSupersonicMapping>('/insight/mappings', payload)
-  },
-  deleteMapping(id: string) {
-    return http.delete<void>(`/insight/mappings/${id}`)
   },
 }

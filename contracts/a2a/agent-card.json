@@ -1,0 +1,30 @@
+{
+  "protocolVersion": "1.0",
+  "name": "datagovernance-platform-agent",
+  "description": "医疗数据治理平台受治理智能体（只读问数 + 元数据目录 + 宿主确认受控提案）",
+  "version": "1.0.0",
+  "url": "/api/v1/insight/agent",
+  "mcpEndpoint": "/api/v1/mcp",
+  "authentication": {
+    "schemes": ["Bearer"],
+    "delegation": "UserContext required; no shared service account (CONSTITUTION C4)"
+  },
+  "capabilities": {
+    "streaming": true,
+    "hostConsentRequiredForWrites": true,
+    "otelGenAiSemconv": "1.42.0"
+  },
+  "skills": [
+    {
+      "id": "insight-data-ask",
+      "name": "受治理智能问数",
+      "readOnly": true
+    },
+    {
+      "id": "parquet-local-onboarding",
+      "name": "本地/NFS Parquet 数据源引导接入",
+      "readOnly": false,
+      "hostConsentRequired": true
+    }
+  ]
+}

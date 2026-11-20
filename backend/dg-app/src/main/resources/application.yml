@@ -61,6 +61,8 @@ dg:
     permit-paths:
       - /api/v1/auth/login
       - /api/v1/internal/agent/**
+      - /api/v1/a2a/agent-card.json
+      - /.well-known/agent-card.json
       - /v3/api-docs/**
       - /swagger-ui/**
       - /swagger-ui.html
@@ -80,18 +82,23 @@ dg:
     snapshot-ttl-minutes: 30
 
   insight:
-    # Phase 2 问数网关。SuperSonic 是独立服务,平台不把它的 admin 口令写进代码。
-    base-url: ${DG_SUPERSONIC_URL:http://localhost:9080}
-    username: ${DG_SUPERSONIC_USER:admin}
-    password: ${DG_SUPERSONIC_PASSWORD:}
-    agent-id: ${DG_SUPERSONIC_AGENT_ID:5}
-    default-dataset-id: ${DG_SUPERSONIC_DATASET_ID:4}
+    # 原生语义问数网关（OpenSpec: semantic-ontology-kernel，已完全替代外部 SuperSonic）。
+    engine: ${DG_INSIGHT_ENGINE:native}
+    dialect: ${DG_INSIGHT_DIALECT:STARROCKS}
+    agent-id: ${DG_INSIGHT_AGENT_ID:1}
+    default-dataset-id: ${DG_INSIGHT_DATASET_ID:1}
     max-rows: ${DG_INSIGHT_MAX_ROWS:200}
     timeout-seconds: ${DG_INSIGHT_TIMEOUT_SECONDS:120}
     # Pi agent 服务（agent-service）调用内部工具端点的共享令牌。
     agent-token: ${DG_AGENT_TOKEN:}
     # Node sidecar 地址（只监听本机）。
     agent-base-url: ${DG_AGENT_URL:http://127.0.0.1:8090}
+    # 本地/NFS 数据源允许的目录前缀白名单（逗号分隔；生产环境建议必填，如 /data/lakehouse,/mnt/nfs）
+    local-root-allowlist: ${DG_LOCAL_ROOT_ALLOWLIST:}
+    # OpenTelemetry GenAI 语义规约配置（生产默认关闭原始 Prompt 采集，防止患者 PII 泄露）
+    otel:
+      semconv-version: "1.42.0"
+      capture-content: ${DG_OTEL_CAPTURE_CONTENT:false}
 
 logging:
   level:

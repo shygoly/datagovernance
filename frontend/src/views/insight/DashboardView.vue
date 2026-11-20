@@ -1,20 +1,31 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { useRouter } from 'vue-router'
+import { ElMessage } from 'element-plus'
 import { insightApi } from '@/api/insight'
+import { confirmDanger } from '@/utils/confirm'
 import { useAuthStore } from '@/stores/auth'
+import InsightAnswerChart, {
+  type ChartBreadcrumb,
+  type ChartDrilldownEvent,
+  type ChartFilterSelection,
+} from '@/components/insight/InsightAnswerChart.vue'
 import type {
   InsightAclCandidate,
   InsightAnswer,
+  InsightChartSpec,
+  InsightChartType,
   InsightDashboard,
   InsightDashboardAcl,
   InsightDashboardDetail,
   InsightDashboardRun,
+  InsightDashboardRunItem,
   InsightDashboardVersion,
 } from '@/types/insight'
 import { formatDateTime } from '@/utils/format'
 
 const auth = useAuthStore()
+const router = useRouter()
 const dashboards = ref<InsightDashboard[]>([])
 const detail = ref<InsightDashboardDetail | null>(null)
 const loading = ref(false)
@@ -38,9 +49,133 @@ const aclForm = ref<{ username: string; permission: 'READ' | 'MANAGE' }>({
   permission: 'READ',
 })
 const reordering = ref(false)
+const itemFilters = ref<Record<string, ChartFilterSelection | null>>({})
+const itemDrillStacks = ref<Record<string, Array<{ label: string; answer: InsightAnswer }>>>({})
+const itemDrilling = ref<Record<string, boolean>>({})
+const itemActiveAnswers = ref<Record<string, InsightAnswer>>({})
 let refreshTimer: number | undefined
 let candidateTimer: ReturnType<typeof setTimeout> | null = null
 let candidateSequence = 0
+
+const VALID_CHART_TYPES = new Set<InsightChartType>([
+  'kpi',
+  'bar',
+  'horizontal_bar',
+  'stacked_bar',
+  'line',
+  'area',
+  'pie',
+  'scatter',
+  'funnel',
+  'table',
+])
+
+function resetItemChartStates() {
+  itemFilters.value = {}
+  itemDrillStacks.value = {}
+  itemDrilling.value = {}
+  itemActiveAnswers.value = {}
+}
+
+function parseItemChartSpec(itemId: string): Partial<InsightChartSpec> | null {
+  const item = detail.value?.items.find((entry) => entry.id === itemId)
+  if (!item) {
+    return null
+  }
+  if (item.layoutJson) {
+    try {
+      const parsed = JSON.parse(item.layoutJson) as { chartSpec?: Partial<InsightChartSpec> | null }
+      if (parsed && typeof parsed === 'object' && parsed.chartSpec) {
+        return parsed.chartSpec
+      }
+    } catch {
+      // ignore malformed layoutJson
+    }
+  }
+  const normalized = (item.chartType || '').toLowerCase() as InsightChartType
+  if (VALID_CHART_TYPES.has(normalized)) {
+    return { chartType: normalized }
+  }
+  return null
+}
+
+function activeAnswerOf(runItem: InsightDashboardRunItem): InsightAnswer | undefined {
+  return itemActiveAnswers.value[runItem.itemId] ?? runItem.answer
+}
+
+function itemBreadcrumbsOf(itemId: string): ChartBreadcrumb[] {
+  const stack = itemDrillStacks.value[itemId]
+  if (!stack || stack.length <= 1) {
+    return []
+  }
+  return stack.map((entry) => ({ label: entry.label }))
+}
+
+function filteredItemRows(runItem: InsightDashboardRunItem): Record<string, unknown>[] {
+  const rows = activeAnswerOf(runItem)?.rows ?? []
+  const filter = itemFilters.value[runItem.itemId]
+  if (!filter) {
+    return rows
+  }
+  return rows.filter((row) => String(row[filter.field] ?? '') === filter.value)
+}
+
+function onItemFilterSelect(itemId: string, selection: ChartFilterSelection | null) {
+  itemFilters.value[itemId] = selection
+}
+
+function clearItemFilter(itemId: string) {
+  itemFilters.value[itemId] = null
+}
+
+async function onItemDrilldown(runItem: InsightDashboardRunItem, event: ChartDrilldownEvent) {
+  const currentAnswer = activeAnswerOf(runItem)
+  if (!currentAnswer || itemDrilling.value[runItem.itemId]) {
+    return
+  }
+  if (!itemDrillStacks.value[runItem.itemId]?.length) {
+    itemDrillStacks.value[runItem.itemId] = [{ label: '看板基线', answer: currentAnswer }]
+  }
+  const itemMeta = detail.value?.items.find((entry) => entry.id === runItem.itemId)
+  itemDrilling.value[runItem.itemId] = true
+  try {
+    const drilled = await insightApi.ask({
+      question: event.label,
+      dataSetId: itemMeta?.datasetId,
+      semanticSpec: event.spec,
+    })
+    itemDrillStacks.value[runItem.itemId] = [
+      ...itemDrillStacks.value[runItem.itemId],
+      { label: event.label, answer: drilled },
+    ]
+    itemActiveAnswers.value[runItem.itemId] = drilled
+    itemFilters.value[runItem.itemId] = null
+  } catch (drillError: any) {
+    ElMessage.error(drillError?.message || '下钻查询失败')
+  } finally {
+    itemDrilling.value[runItem.itemId] = false
+  }
+}
+
+function onItemBreadcrumbBack(itemId: string, index: number) {
+  const stack = itemDrillStacks.value[itemId]
+  if (!stack || index < 0 || index >= stack.length) {
+    return
+  }
+  const sliced = stack.slice(0, index + 1)
+  itemFilters.value[itemId] = null
+  if (sliced.length <= 1) {
+    delete itemDrillStacks.value[itemId]
+    delete itemActiveAnswers.value[itemId]
+  } else {
+    itemDrillStacks.value[itemId] = sliced
+    itemActiveAnswers.value[itemId] = sliced[sliced.length - 1].answer
+  }
+}
+
+function onItemAskFollowup(prompt: string) {
+  void router.push({ path: '/insight/ask', query: { prompt } })
+}
 
 const canManage = computed(() => auth.hasPermission('insight:dashboard:manage'))
 const canAsk = computed(() => auth.hasPermission('insight:ask'))
@@ -64,6 +199,8 @@ async function loadDashboards() {
 
 async function loadDetail(id: string) {
   selectedId.value = id
+  runResult.value = null
+  resetItemChartStates()
   detail.value = await insightApi.dashboard(id)
 }
 
@@ -92,6 +229,7 @@ async function runDashboard(silent = false) {
   running.value = true
   try {
     runResult.value = await insightApi.runDashboard(detail.value.id)
+    resetItemChartStates()
     if (!silent) {
       ElMessage.success('看板已刷新')
     }
@@ -200,11 +338,8 @@ async function removeAcl(username: string) {
   if (!detail.value || !canManage.value) {
     return
   }
-  try {
-    await ElMessageBox.confirm(`移除 ${username} 的看板权限？`, '移除权限', {
-      type: 'warning',
-    })
-  } catch {
+  const confirmed = await confirmDanger(`移除 ${username} 的看板权限？`, '移除权限', '移除')
+  if (!confirmed) {
     return
   }
   try {
@@ -272,9 +407,10 @@ async function removeDashboard(id: string) {
   if (!canManage.value) {
     return
   }
-  await ElMessageBox.confirm('删除看板会同时删除其问题项,确定吗?', '删除看板', {
-    type: 'warning',
-  })
+  const confirmed = await confirmDanger('删除看板会同时删除其问题项，确定吗？', '删除看板')
+  if (!confirmed) {
+    return
+  }
   await insightApi.deleteDashboard(id)
   if (selectedId.value === id) {
     selectedId.value = ''
@@ -440,13 +576,34 @@ onBeforeUnmount(() => {
                   :closable="false"
                   :title="item.error || '执行失败'"
                 />
-                <template v-else-if="item.answer">
-                  <div v-if="item.answer.summary" class="dashboard__summary">
-                    {{ item.answer.summary }}
+                <template v-else-if="activeAnswerOf(item)">
+                  <div v-if="activeAnswerOf(item)?.summary" class="dashboard__summary">
+                    {{ activeAnswerOf(item)?.summary }}
                   </div>
-                  <el-table :data="item.answer.rows" size="small" max-height="220">
+                  <InsightAnswerChart
+                    :answer="activeAnswerOf(item)!"
+                    :initial-chart-spec="parseItemChartSpec(item.itemId)"
+                    :breadcrumbs="itemBreadcrumbsOf(item.itemId)"
+                    :drilling="Boolean(itemDrilling[item.itemId])"
+                    @filter-select="(sel) => onItemFilterSelect(item.itemId, sel)"
+                    @drilldown="(ev) => onItemDrilldown(item, ev)"
+                    @breadcrumb-back="(idx) => onItemBreadcrumbBack(item.itemId, idx)"
+                    @ask-followup="onItemAskFollowup"
+                  />
+                  <div v-if="itemFilters[item.itemId]" class="dashboard__filter-bar">
+                    <el-tag size="small" type="primary">
+                      图表联动筛选：{{ itemFilters[item.itemId]!.fieldLabel }} = {{ itemFilters[item.itemId]!.value }}
+                    </el-tag>
+                    <span class="text-muted">
+                      当前显示 {{ filteredItemRows(item).length }} / {{ activeAnswerOf(item)!.rows.length }} 行
+                    </span>
+                    <el-button link size="small" type="primary" @click="clearItemFilter(item.itemId)">
+                      清除筛选
+                    </el-button>
+                  </div>
+                  <el-table :data="filteredItemRows(item)" size="small" max-height="260">
                     <el-table-column
-                      v-for="column in answerColumns(item.answer)"
+                      v-for="column in answerColumns(activeAnswerOf(item))"
                       :key="column.key"
                       :prop="column.key"
                       :label="column.label"
@@ -597,6 +754,19 @@ onBeforeUnmount(() => {
 .dashboard__summary {
   margin-bottom: 8px;
   line-height: 1.6;
+}
+
+.dashboard__filter-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--dg-space-sm);
+  margin: var(--dg-space-sm) 0;
+  padding: 6px var(--dg-space-sm);
+  background: var(--dg-surface-muted);
+  border: 1px solid var(--dg-border);
+  border-radius: var(--dg-radius);
+  font-size: 12px;
 }
 
 .dashboard__title h3 {

@@ -4,6 +4,8 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { agentApi } from '@/api/agent'
 import { useAgentSessionStore } from '@/stores/agentSession'
+import type { AgentActionProposal } from '@/types/agent'
+import AgentConsentDialog from './AgentConsentDialog.vue'
 
 /**
  * 全局 Agent Dock。
@@ -87,15 +89,26 @@ watch(() => route.name, (name) => {
 })
 
 const TOOL_LABELS: Record<string, string> = {
+  activate_skill: '激活技能规程',
   list_datasets: '列出数据集',
   ask_data: '数据查询',
-  create_local_datasource: '创建本地数据源',
-  update_local_datasource: '修改本地数据源',
+  create_local_datasource: '提案：创建本地数据源',
+  update_local_datasource: '提案：修改本地数据源',
   test_datasource: '测试连接',
   list_catalog_sources: '列出目录来源',
-  create_parquet_catalog_source: '创建目录来源',
-  refresh_catalog_source: '采集目录',
+  create_parquet_catalog_source: '提案：创建目录来源',
+  refresh_catalog_source: '提案：采集目录',
   navigate_workspace: '切换工作页面',
+}
+
+const consentDismissed = ref(false)
+const activeDockProposal = computed<AgentActionProposal | null>(() =>
+  consentDismissed.value ? null : session.activeProposal,
+)
+
+function handleProposalResolved(proposal: AgentActionProposal) {
+  session.removeProposal(proposal.id)
+  consentDismissed.value = false
 }
 
 function toolLabel(name: string): string {
@@ -185,7 +198,24 @@ async function stop() {
         <span class="agent-dock__follow-label">自动切换页面</span>
       </div>
 
+      <el-alert
+        v-if="session.activeProposal"
+        type="warning"
+        :closable="false"
+        show-icon
+        :title="`待确认操作：${session.activeProposal.title}`"
+        class="agent-dock__alert"
+      />
+
       <div class="agent-dock__actions">
+        <el-button
+          v-if="session.activeProposal"
+          size="small"
+          type="warning"
+          @click="consentDismissed = false"
+        >
+          打开确认弹窗
+        </el-button>
         <el-button
           v-if="canOpenTarget"
           size="small"
@@ -209,6 +239,12 @@ async function stop() {
       </el-badge>
       <span class="agent-dock__pill-text">{{ pillText }}</span>
     </button>
+
+    <AgentConsentDialog
+      :proposal="activeDockProposal"
+      @resolved="handleProposalResolved"
+      @dismiss="consentDismissed = true"
+    />
   </div>
 </template>
 

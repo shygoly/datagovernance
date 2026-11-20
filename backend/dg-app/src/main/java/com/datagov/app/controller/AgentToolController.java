@@ -1,9 +1,14 @@
 package com.datagov.app.controller;
 
+import com.datagov.app.insight.AgentActionProposalService;
+import com.datagov.app.insight.AgentActionProposalService.CreateProposalCommand;
+import com.datagov.app.insight.AgentActionProposalService.ProposalView;
+import com.datagov.app.insight.AgentControlPlaneService;
+import com.datagov.app.insight.InsightQueryEngine;
 import com.datagov.app.insight.InsightQueryService;
 import com.datagov.app.insight.InsightQueryService.Answer;
 import com.datagov.app.insight.InsightQueryService.AskRequest;
-import com.datagov.app.insight.SuperSonicClient;
+import com.datagov.app.insight.NativeInsightEngine;
 import com.datagov.common.api.ApiResponse;
 import com.datagov.common.error.BizException;
 import com.datagov.common.error.ErrorCode;
@@ -20,6 +25,12 @@ import com.datagov.metadata.service.CatalogAssetService.RefreshResult;
 import com.datagov.metadata.service.CatalogAssetService.SourceRequest;
 import com.datagov.metadata.service.CatalogAssetService.SourceView;
 import com.datagov.metadata.service.DataSourceService;
+import com.datagov.metadata.service.SemanticOntologyService;
+import com.datagov.metadata.service.SemanticOntologyService.ObjectView;
+import com.datagov.metadata.service.SemanticOntologyService.SubgraphResult;
+import com.datagov.metadata.service.SemanticOntologyService.SubgraphSearchRequest;
+import com.datagov.metadata.service.SemanticQueryCompiler.CompiledSemanticQuery;
+import com.datagov.metadata.service.SemanticQueryCompiler.SemanticQuerySpec;
 import com.datagov.platform.service.PermissionService;
 import com.datagov.platform.service.WorkspaceService;
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -65,17 +76,26 @@ public class AgentToolController {
     private final WorkspaceService workspaceService;
     private final AuditService auditService;
     private final ObjectMapper objectMapper;
+    private final AgentActionProposalService proposalService;
+    private final AgentControlPlaneService controlPlane;
+    private final SemanticOntologyService semanticService;
+    private final NativeInsightEngine nativeEngine;
 
     @Value("${dg.insight.agent-token:}")
     private String agentToken;
 
+    @org.springframework.beans.factory.annotation.Autowired
     public AgentToolController(InsightQueryService queryService,
                                DataSourceService dataSourceService,
                                CatalogAssetService catalogAssetService,
                                PermissionService permissionService,
                                WorkspaceService workspaceService,
                                AuditService auditService,
-                               ObjectMapper objectMapper) {
+                               ObjectMapper objectMapper,
+                               AgentActionProposalService proposalService,
+                               AgentControlPlaneService controlPlane,
+                               SemanticOntologyService semanticService,
+                               NativeInsightEngine nativeEngine) {
         this.queryService = queryService;
         this.dataSourceService = dataSourceService;
         this.catalogAssetService = catalogAssetService;
@@ -83,6 +103,22 @@ public class AgentToolController {
         this.workspaceService = workspaceService;
         this.auditService = auditService;
         this.objectMapper = objectMapper;
+        this.proposalService = proposalService;
+        this.controlPlane = controlPlane;
+        this.semanticService = semanticService;
+        this.nativeEngine = nativeEngine;
+    }
+
+    /** 向后兼容旧单测构造器。 */
+    public AgentToolController(InsightQueryService queryService,
+                               DataSourceService dataSourceService,
+                               CatalogAssetService catalogAssetService,
+                               PermissionService permissionService,
+                               WorkspaceService workspaceService,
+                               AuditService auditService,
+                               ObjectMapper objectMapper) {
+        this(queryService, dataSourceService, catalogAssetService, permissionService,
+                workspaceService, auditService, objectMapper, null, null, null, null);
     }
 
     public record AskToolRequest(String workspaceId, String username, String question,
@@ -101,29 +137,122 @@ public class AgentToolController {
     // ── 问数工具 ────────────────────────────────────────────────────────
 
     @GetMapping("/datasets")
-    @Operation(summary = "Agent 工具：可用数据集")
-    public ApiResponse<List<SuperSonicClient.DatasetOption>> datasets(
+    @Operation(summary = "Agent 工具：可用语义主题")
+    public ApiResponse<List<InsightQueryEngine.DatasetOption>> datasets(
             @RequestHeader(value = "X-Agent-Token", required = false) String token,
-            @RequestParam String workspaceId,
-            @RequestParam String username) {
-        requireToken(token);
-        return ApiResponse.ok(withCaller(workspaceId, username, queryService::datasets));
+            @RequestHeader(value = "X-Agent-User-Id", required = false) String userId,
+            @RequestHeader(value = "X-Agent-Username", required = false) String headerUsername,
+            @RequestHeader(value = "X-Agent-Workspace-Id", required = false) String headerWorkspaceId,
+            @RequestHeader(value = "X-Agent-Admin", defaultValue = "false") boolean platformAdmin,
+            @RequestParam(required = false) String workspaceId,
+            @RequestParam(required = false) String username) {
+        String effectiveWorkspaceId = resolveWorkspaceId(headerWorkspaceId, workspaceId);
+        String effectiveUsername = !blank(headerUsername) ? headerUsername : username;
+        return ApiResponse.ok(withCallerAny(token, userId, effectiveUsername, effectiveWorkspaceId,
+                platformAdmin, Set.of("insight:ask", "insight:read"), queryService::datasets));
+    }
+
+    @PostMapping("/semantic/subgraph")
+    @Operation(summary = "Agent 工具：受控 k-Hop 逐跳鉴权语义子图检索（C5）")
+    public ApiResponse<SubgraphResult> searchSemanticSubgraph(
+            @RequestHeader(value = "X-Agent-Token", required = false) String token,
+            @RequestHeader(value = "X-Agent-User-Id", required = false) String userId,
+            @RequestHeader(value = "X-Agent-Username", required = false) String username,
+            @RequestHeader(value = "X-Agent-Workspace-Id", required = false) String workspaceId,
+            @RequestHeader(value = "X-Agent-Admin", defaultValue = "false") boolean platformAdmin,
+            @RequestBody SubgraphSearchRequest request) {
+        if (semanticService == null) {
+            throw new BizException(ErrorCode.GOV_INSIGHT_NOT_CONFIGURED, "语义本体服务未装配");
+        }
+        return ApiResponse.ok(withCallerAny(token, userId, username, workspaceId, platformAdmin,
+                Set.of("insight:ask", "metadata:semantic:read"),
+                () -> semanticService.searchSubgraph(request)));
+    }
+
+    @GetMapping("/semantic/objects/{id}")
+    @Operation(summary = "Agent 工具：查看单个语义对象详情（只读）")
+    public ApiResponse<ObjectView> getSemanticObject(
+            @RequestHeader(value = "X-Agent-Token", required = false) String token,
+            @RequestHeader(value = "X-Agent-User-Id", required = false) String userId,
+            @RequestHeader(value = "X-Agent-Username", required = false) String username,
+            @RequestHeader(value = "X-Agent-Workspace-Id", required = false) String workspaceId,
+            @RequestHeader(value = "X-Agent-Admin", defaultValue = "false") boolean platformAdmin,
+            @PathVariable String id) {
+        if (semanticService == null) {
+            throw new BizException(ErrorCode.GOV_INSIGHT_NOT_CONFIGURED, "语义本体服务未装配");
+        }
+        return ApiResponse.ok(withCallerAny(token, userId, username, workspaceId, platformAdmin,
+                Set.of("insight:ask", "metadata:semantic:read"),
+                () -> semanticService.getObject(id)));
+    }
+
+    @PostMapping("/semantic/compile")
+    @Operation(summary = "Agent 工具：确定性编译 SemanticQuerySpec（只读预览，不执行）")
+    public ApiResponse<CompiledSemanticQuery> compileSemantic(
+            @RequestHeader(value = "X-Agent-Token", required = false) String token,
+            @RequestHeader(value = "X-Agent-User-Id", required = false) String userId,
+            @RequestHeader(value = "X-Agent-Username", required = false) String username,
+            @RequestHeader(value = "X-Agent-Workspace-Id", required = false) String workspaceId,
+            @RequestHeader(value = "X-Agent-Admin", defaultValue = "false") boolean platformAdmin,
+            @RequestBody SemanticQuerySpec spec) {
+        if (nativeEngine == null) {
+            throw new BizException(ErrorCode.GOV_INSIGHT_NOT_CONFIGURED, "原生语义编译引擎未装配");
+        }
+        return ApiResponse.ok(withCaller(token, userId, username, workspaceId, platformAdmin,
+                "insight:ask", () -> nativeEngine.compilePreview(spec)));
+    }
+
+    @PostMapping("/semantic/query")
+    @Operation(summary = "Agent 工具：按结构化 SemanticQuerySpec 执行确定性语义问数")
+    public ApiResponse<Answer> executeSemanticQuery(
+            @RequestHeader(value = "X-Agent-Token", required = false) String token,
+            @RequestHeader(value = "X-Agent-User-Id", required = false) String userId,
+            @RequestHeader(value = "X-Agent-Username", required = false) String username,
+            @RequestHeader(value = "X-Agent-Workspace-Id", required = false) String workspaceId,
+            @RequestHeader(value = "X-Agent-Admin", defaultValue = "false") boolean platformAdmin,
+            @RequestBody SemanticQuerySpec spec) {
+        return ApiResponse.ok(withCaller(token, userId, username, workspaceId, platformAdmin,
+                "insight:ask", () -> queryService.ask(new AskRequest("结构化语义查询", null, null, spec))));
     }
 
     @PostMapping("/ask")
     @Operation(summary = "Agent 工具：自然语言数据查询")
     public ApiResponse<Answer> ask(
             @RequestHeader(value = "X-Agent-Token", required = false) String token,
+            @RequestHeader(value = "X-Agent-User-Id", required = false) String userId,
+            @RequestHeader(value = "X-Agent-Username", required = false) String headerUsername,
+            @RequestHeader(value = "X-Agent-Workspace-Id", required = false) String headerWorkspaceId,
+            @RequestHeader(value = "X-Agent-Admin", defaultValue = "false") boolean platformAdmin,
             @RequestBody AskToolRequest request) {
-        requireToken(token);
-        if (request == null || request.workspaceId() == null
-                || request.username() == null || request.question() == null) {
-            throw new BizException(ErrorCode.SYS_VALIDATION_FAILED,
-                    "workspaceId / username / question 必填");
+        if (request == null || blank(request.question())) {
+            throw new BizException(ErrorCode.SYS_VALIDATION_FAILED, "question 必填");
         }
-        return ApiResponse.ok(withCaller(request.workspaceId(), request.username(),
+        String effectiveWorkspaceId = resolveWorkspaceId(headerWorkspaceId, request.workspaceId());
+        String effectiveUsername = !blank(headerUsername) ? headerUsername : request.username();
+        return ApiResponse.ok(withCaller(token, userId, effectiveUsername, effectiveWorkspaceId,
+                platformAdmin, "insight:ask",
                 () -> queryService.ask(new AskRequest(request.question(),
                         request.dataSetId(), null))));
+    }
+
+    // ── 写操作宿主确认提案端点（Phase B / b2，闭合 ASI09）──────────────────
+
+    @PostMapping("/proposals")
+    @Operation(summary = "Agent 工具：生成待宿主确认的写操作提案（不直接落库执行）")
+    public ApiResponse<ProposalView> createProposal(
+            @RequestHeader(value = "X-Agent-Token", required = false) String token,
+            @RequestHeader(value = "X-Agent-User-Id", required = false) String userId,
+            @RequestHeader(value = "X-Agent-Username", required = false) String username,
+            @RequestHeader(value = "X-Agent-Workspace-Id", required = false) String workspaceId,
+            @RequestHeader(value = "X-Agent-Admin", defaultValue = "false") boolean platformAdmin,
+            @RequestBody CreateProposalCommand request) {
+        if (proposalService == null) {
+            throw new BizException(ErrorCode.GOV_INSIGHT_NOT_CONFIGURED, "提案服务未装配");
+        }
+        return withCallerAny(token, userId, username, workspaceId, platformAdmin,
+                Set.of("insight:ask", "metadata:datasource:create", "metadata:datasource:update",
+                        "metadata:asset:manage", "metadata:asset:refresh"),
+                () -> ApiResponse.ok(proposalService.createProposal(request)));
     }
 
     // ── 本地/NFS Parquet 接入工具 ───────────────────────────────────────
@@ -286,41 +415,45 @@ public class AgentToolController {
     }
 
     /**
-     * 写操作按真实用户重新解析权限：Node 传来的 userId 只作为“是谁发起的对话”，
-     * 不作为“他有什么权限”的证据。权限永远从 Platform 的实时授权表里查。
+     * 所有 Agent 工具端点均按真实用户实时重算成员资格与权限：Node 传来的 userId 只作为
+     * “是谁发起的对话”，不作为“他有什么权限”的证据。严禁构造合成服务账号 Caller（CONSTITUTION C4）。
      */
     private <T> T withCaller(String token, String userId, String username, String workspaceId,
                              boolean platformAdmin, String requiredPermission,
                              Supplier<T> action) {
+        return withCallerAny(token, userId, username, workspaceId, platformAdmin,
+                Set.of(requiredPermission), action);
+    }
+
+    private <T> T withCallerAny(String token, String userId, String username, String workspaceId,
+                                boolean platformAdmin, Set<String> acceptedPermissions,
+                                Supplier<T> action) {
         requireToken(token);
         if (blank(userId) || blank(username) || blank(workspaceId)) {
             throw new BizException(ErrorCode.SYS_VALIDATION_FAILED,
                     "Agent 工具缺少用户上下文（userId/username/workspaceId）");
         }
+        if (controlPlane != null) {
+            controlPlane.requireAgentEnabled(workspaceId);
+        }
         workspaceService.requireAccess(userId, workspaceId);
         Set<String> permissions = permissionService.resolvePermissions(userId, workspaceId);
         Caller caller = new Caller(userId, username, workspaceId, platformAdmin, permissions);
-        if (!caller.hasPermission(requiredPermission)) {
-            throw new BizException(ErrorCode.PLT_FORBIDDEN, "缺少权限: " + requiredPermission);
+        boolean allowed = acceptedPermissions.stream().anyMatch(caller::hasPermission);
+        if (!allowed) {
+            throw new BizException(ErrorCode.PLT_FORBIDDEN,
+                    "缺少权限: " + String.join(" 或 ", acceptedPermissions));
         }
         return withCaller(caller, action);
     }
 
-    /**
-     * 问数工具没有用户 JWT，但需要复用需要 WorkspaceContext 的服务。
-     * 只授予 ask/read 权限，且每个请求结束立刻恢复原上下文。
-     */
-    private <T> T withCaller(String workspaceId, String username, Supplier<T> action) {
-        if (workspaceId == null || workspaceId.isBlank()) {
-            throw new BizException(ErrorCode.PLT_MISSING_WORKSPACE, "Agent 工具请求缺少 workspaceId");
+    private static String resolveWorkspaceId(String headerWorkspaceId, String payloadWorkspaceId) {
+        if (!blank(headerWorkspaceId) && !blank(payloadWorkspaceId)
+                && !headerWorkspaceId.trim().equals(payloadWorkspaceId.trim())) {
+            throw new BizException(ErrorCode.PLT_FORBIDDEN, "请求头与载荷的 workspaceId 不一致");
         }
-        Caller caller = new Caller(
-                "agent:" + username,
-                username,
-                workspaceId,
-                false,
-                Set.of("insight:ask", "insight:read"));
-        return withCaller(caller, action);
+        return !blank(headerWorkspaceId) ? headerWorkspaceId.trim()
+                : (payloadWorkspaceId == null ? null : payloadWorkspaceId.trim());
     }
 
     private <T> T withCaller(Caller caller, Supplier<T> action) {
@@ -351,11 +484,14 @@ public class AgentToolController {
      * Agent 可以创建本地数据源，但不应该被一句话带去扫描整个文件系统。
      * 这里只做最低限度的边界：绝对路径、非根目录。真正的目录白名单属于部署策略。
      */
-    private static String requireSafeRootPath(String rootPath) {
+    private String requireSafeRootPath(String rootPath) {
+        if (controlPlane != null) {
+            return controlPlane.requireSafeRootPath(rootPath);
+        }
         String value = rootPath == null ? "" : rootPath.trim();
-        if (!value.startsWith("/") || value.equals("/")) {
+        if (!value.startsWith("/") || value.equals("/") || value.contains("..")) {
             throw new BizException(ErrorCode.MTD_CONFIG_INVALID,
-                    "rootPath 必须是后端机器上的绝对目录，且不能是根目录 /");
+                    "rootPath 必须是后端机器上的绝对目录，且不能是根目录 / 或包含 ..");
         }
         return value;
     }

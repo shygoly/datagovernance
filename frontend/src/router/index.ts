@@ -55,12 +55,6 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '问数看板', permission: 'insight:dashboard:read' },
       },
       {
-        path: 'insight/mappings',
-        name: 'insight-mappings',
-        component: () => import('@/views/insight/MappingView.vue'),
-        meta: { title: '问数账号映射', permission: 'insight:mapping:read' },
-      },
-      {
         path: 'metadata/datasources',
         name: 'datasources',
         component: () => import('@/views/metadata/DataSourceListView.vue'),
@@ -70,7 +64,11 @@ const routes: RouteRecordRaw[] = [
         path: 'metadata/assets/:id',
         name: 'metadata-asset-detail',
         component: () => import('@/views/metadata/AssetDetailView.vue'),
-        meta: { title: '资产详情', permission: 'metadata:asset:read' },
+        meta: {
+          title: '资产详情',
+          permission: 'metadata:asset:read',
+          parentPath: '/metadata/catalog',
+        },
       },
       {
         path: 'metadata/lineage',
@@ -89,6 +87,12 @@ const routes: RouteRecordRaw[] = [
         name: 'metadata-glossary',
         component: () => import('@/views/metadata/GlossaryView.vue'),
         meta: { title: '业务术语', permission: 'metadata:glossary:read', keepAlive: true },
+      },
+      {
+        path: 'metadata/semantic',
+        name: 'metadata-semantic',
+        component: () => import('@/views/metadata/SemanticOntologyView.vue'),
+        meta: { title: '语义本体', permission: 'metadata:semantic:read', keepAlive: true },
       },
       {
         path: 'metadata/quality',

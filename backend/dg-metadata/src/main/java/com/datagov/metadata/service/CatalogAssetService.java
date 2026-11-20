@@ -414,12 +414,21 @@ public class CatalogAssetService {
 
         CatalogPage root = gateway.browse(type, config, CatalogPath.root());
         List<DatabaseInfo> databases = root.databases();
-        if (databases.isEmpty() && dataSource.getDatabaseName() != null
-                && !dataSource.getDatabaseName().isBlank()) {
+        String configuredDb = dataSource.getDatabaseName() == null ? "" : dataSource.getDatabaseName().trim();
+        if (!configuredDb.isEmpty() && !databases.isEmpty()) {
+            // 当数据源已显式指定 databaseName（尤其是 PostgreSQL，连接绑定单库但 browse(ROOT) 会列出整集群全部库）时，
+            // 仅采集当前配置的数据库，避免重复扫无关库造成 N 倍目录膨胀与超时。
+            List<DatabaseInfo> matched = databases.stream()
+                    .filter(d -> d.name() != null && d.name().equalsIgnoreCase(configuredDb))
+                    .toList();
+            if (!matched.isEmpty()) {
+                databases = matched;
+            }
+        }
+        if (databases.isEmpty() && !configuredDb.isEmpty()) {
             // 没有独立库概念的引擎(Oracle/达梦)或驱动没报 catalogs:
             // 用连接配置里的库名占位,保证目录树有根。
-            databases = List.of(new DatabaseInfo(dataSource.getDatabaseName(),
-                    null, null, null));
+            databases = List.of(new DatabaseInfo(configuredDb, null, null, null));
         }
 
         Counts counts = new Counts();

@@ -9,8 +9,14 @@ space:
   participates_in: [1..35]   # 全部 35 项的界面侧
 
   core_objects:              # 前端状态,不落库
-    - WorkspaceSwitcher
+    - WorkspaceSwitcher      # 顶栏空间切换（必须换票并清理跨租户缓存）
     - NavigationMenu         # 由 platform 的 MenuPermission 驱动渲染
+    - BreadcrumbTrail        # 基于后端菜单树与详情父路由生成的多级面包屑
+    - SessionShell           # 登录页、退出二次确认、401 清理与回跳
+    - OverlayController      # 分层浮层（confirmAction/confirmDanger、el-dialog、el-drawer）
+    - HostConsentDialog      # C7 宿主独立高危审批视图（不可被 Agent 篡改）
+    - AgentDock              # 跨页面智能体状态浮窗与页面跟随控制
+    - InteractiveChart       # C7 白名单 ECharts 图表（L1 联动 / L2 零 LLM 下钻 / L3 归因）
     - FormWizard             # 数据源创建、同步配置、字段映射
     - SchemaTree             # 序号7 库/模式/表/字段/视图
     - SqlEditor              # 序号7/18/20,含 SQL 格式化(纯前端能力)
@@ -31,12 +37,15 @@ space:
   policies:
     - 五处执行记录页面是同一组件的五次参数化实例,不是五套代码
     - SQL 格式化是纯展示能力,可在前端;规则语义不可
+    - 视觉、壳层布局、多级面包屑、登录退出与 5 级浮层交互遵循 frontend/DESIGN.md 与 tokens.css
+    - 二次确认统一经 utils/confirm.ts（confirmAction/confirmDanger），禁止页面裸调 ElMessageBox.confirm
+    - 动态交互视图与 AI 高危确认严守 CONSTITUTION C7（宿主白名单组件 + HostConsentDialog）
 
   storage:
-    browser: localStorage(仅限草稿与布局偏好)
-    note: 不持久化任何领域数据
+    browser: localStorage(仅限 token/workspaceId、草稿与布局偏好)
+    note: 不持久化权限列表与任何领域数据
 
-  runtime: platform-ui (React + TypeScript + Ant Design + React Flow/AntV X6)
+  runtime: platform-ui (Vue 3 + TypeScript + Element Plus + Pinia + Vue Router + ECharts)
 
   depends_on:
     - metadata

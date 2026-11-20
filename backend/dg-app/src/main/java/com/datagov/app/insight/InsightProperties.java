@@ -3,51 +3,41 @@ package com.datagov.app.insight;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 /**
- * 智能问数网关配置。
+ * 智能问数网关配置（OpenSpec: semantic-ontology-kernel）。
  *
- * <p>SuperSonic 是独立服务,平台只持有一个服务账号;绝不能把 SuperSonic 的
- * admin 口令写进代码或仓库。本地用环境变量注入,生产应走平台凭据管理。
+ * <p>平台已完全切换至原生语义问数引擎（{@code dg-metadata} 语义内核 + 确定性 SQL 编译器 + {@code DataAccessGateway}），
+ * 不再依赖外部 SuperSonic 服务或共享服务账号。
  */
 @ConfigurationProperties(prefix = "dg.insight")
 public class InsightProperties {
 
-    /** SuperSonic 基地址,例如 http://localhost:9080 */
-    private String baseUrl = "http://localhost:9080";
-    /** 平台服务账号;SuperSonic 目前没有平台级 service token,先用普通账号登录 */
-    private String username = "admin";
-    /** 服务账号口令;为空时只允许启动,调用 ask 时返回“未配置” */
-    private String password = "";
-    /** 默认助手 ID */
-    private int agentId = 5;
-    /** 默认数据集 ID */
-    private long defaultDatasetId = 4;
-    /** 平台最多返回多少行,防止把 SuperSonic 的 1000 行全塞给前端 */
+    /** 问数引擎标识（native） */
+    private String engine = "native";
+    /** 默认目标查询方言：STARROCKS / MYSQL / POSTGRESQL */
+    private String dialect = "STARROCKS";
+    /** 默认助手 ID（兼容旧查询日志字段） */
+    private int agentId = 1;
+    /** 默认语义主题 ID */
+    private long defaultDatasetId = 1;
+    /** 平台单次最多返回行数 */
     private int maxRows = 200;
-    /** 上游调用超时(秒) */
+    /** 只读查询执行超时（秒） */
     private int timeoutSeconds = 120;
 
-    public String getBaseUrl() {
-        return baseUrl;
+    public String getEngine() {
+        return engine;
     }
 
-    public void setBaseUrl(String baseUrl) {
-        this.baseUrl = baseUrl;
+    public void setEngine(String engine) {
+        this.engine = engine;
     }
 
-    public String getUsername() {
-        return username;
+    public String getDialect() {
+        return dialect;
     }
 
-    public void setUsername(String username) {
-        this.username = username;
-    }
-
-    public String getPassword() {
-        return password;
-    }
-
-    public void setPassword(String password) {
-        this.password = password;
+    public void setDialect(String dialect) {
+        this.dialect = dialect;
     }
 
     public int getAgentId() {

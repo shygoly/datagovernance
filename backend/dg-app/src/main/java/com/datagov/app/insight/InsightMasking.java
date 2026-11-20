@@ -38,7 +38,7 @@ public final class InsightMasking {
     }
 
     public static Masked mask(List<Map<String, Object>> rows,
-                              List<SuperSonicClient.Column> columns,
+                              List<InsightQueryEngine.InsightColumn> columns,
                               String sql,
                               List<SensitiveColumnView> sensitiveColumns) {
         if (rows == null || rows.isEmpty() || sensitiveColumns == null
@@ -56,7 +56,7 @@ public final class InsightMasking {
         }
 
         Set<String> maskedNames = new HashSet<>(aliasesOf(sql, sensitive));
-        for (SuperSonicClient.Column column : columns) {
+        for (InsightQueryEngine.InsightColumn column : columns) {
             if (isSensitive(column.name(), sensitive) || isSensitive(column.bizName(), sensitive)) {
                 maskedNames.add(column.name());
                 maskedNames.add(column.bizName());

@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
+import type { AgentActionProposal } from '@/types/agent'
 
 /** Agent 在别的页面继续工作时，Dock 只需要这一份轻量状态。 */
 export interface AgentSessionTool {
@@ -73,9 +74,13 @@ export const useAgentSessionStore = defineStore('agentSession', () => {
   const state = ref<AgentSessionState>(readSession())
   const follow = ref(readFollow())
   const lastNavigate = ref<AgentNavigateTarget | null>(null)
+  const pendingProposals = ref<AgentActionProposal[]>([])
 
   const running = computed(() => state.value.status === 'running')
   const hasConversation = computed(() => Boolean(state.value.conversationId))
+  const activeProposal = computed<AgentActionProposal | null>(() =>
+    pendingProposals.value.find((item) => item.status === 'PENDING') ?? null,
+  )
 
   function persist() {
     try {
@@ -122,6 +127,23 @@ export const useAgentSessionStore = defineStore('agentSession', () => {
     lastNavigate.value = target
   }
 
+  function pushProposal(proposal: AgentActionProposal) {
+    const idx = pendingProposals.value.findIndex((item) => item.id === proposal.id)
+    if (idx >= 0) {
+      pendingProposals.value[idx] = proposal
+    } else {
+      pendingProposals.value.unshift(proposal)
+    }
+  }
+
+  function setProposals(list: AgentActionProposal[]) {
+    pendingProposals.value = list.filter((item) => item.status === 'PENDING')
+  }
+
+  function removeProposal(id: string) {
+    pendingProposals.value = pendingProposals.value.filter((item) => item.id !== id)
+  }
+
   function setFollow(value: boolean) {
     follow.value = value
     try {
@@ -134,6 +156,7 @@ export const useAgentSessionStore = defineStore('agentSession', () => {
   function clear() {
     state.value = { ...EMPTY }
     lastNavigate.value = null
+    pendingProposals.value = []
     try {
       sessionStorage.removeItem(SESSION_KEY)
     } catch {
@@ -145,11 +168,16 @@ export const useAgentSessionStore = defineStore('agentSession', () => {
     state,
     follow,
     lastNavigate,
+    pendingProposals,
+    activeProposal,
     running,
     hasConversation,
     update,
     setActive,
     setNavigate,
+    pushProposal,
+    setProposals,
+    removeProposal,
     setFollow,
     clear,
   }

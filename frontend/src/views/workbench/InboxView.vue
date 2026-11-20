@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, reactive, ref } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import { useRouter } from 'vue-router'
 import { inboxApi } from '@/api/governance'
+import { confirmAction } from '@/utils/confirm'
+import { semanticApi } from '@/api/semantic'
 import { usePageRefresh } from '@/composables/usePageRefresh'
 import { useAuthStore } from '@/stores/auth'
 import type { InboxItem, InboxSourceType } from '@/types/governance'
@@ -35,7 +37,9 @@ let filterTimer: ReturnType<typeof setTimeout> | null = null
 const canExecution = computed(() => auth.hasPermission('runtime:execution:read'))
 const canAlert = computed(() => auth.hasPermission('governance:alert:read'))
 const canSensitivity = computed(() => auth.hasPermission('metadata:sensitivity:read'))
+const canSemantic = computed(() => auth.hasPermission('metadata:semantic:read'))
 const canManage = computed(() => auth.hasPermission('governance:inbox:manage'))
+const pendingSemanticProposals = ref(0)
 
 const sourceOptions = computed(() => [
   { value: 'EXECUTION', label: '失败执行', show: canExecution.value },
@@ -87,6 +91,11 @@ async function load() {
     rows.value = page.records
     total.value = page.total
     truncated.value = page.truncated
+    if (canSemantic.value) {
+      semanticApi.listProposals('PROPOSED')
+        .then((list) => { pendingSemanticProposals.value = list.length })
+        .catch(() => { pendingSemanticProposals.value = 0 })
+    }
   } catch {
     rows.value = []
     total.value = 0
@@ -128,15 +137,13 @@ function openItem(item: any) {
 
 async function toggleItem(item: any) {
   const dismiss = item.state === 'OPEN'
-  try {
-    await ElMessageBox.confirm(
-      dismiss
-        ? '仅从收件箱移除，不会改变来源对象的状态。继续？'
-        : '将条目恢复到待处理列表？',
-      dismiss ? '移出收件箱' : '恢复条目',
-      { type: 'warning' },
-    )
-  } catch {
+  const confirmed = await confirmAction(
+    dismiss
+      ? '仅从收件箱移除，不会改变来源对象的状态。继续？'
+      : '将条目恢复到待处理列表？',
+    dismiss ? '移出收件箱' : '恢复条目',
+  )
+  if (!confirmed) {
     return
   }
   try {
@@ -237,6 +244,27 @@ onBeforeUnmount(() => {
           </el-button>
         </template>
       </FilterBar>
+
+      <el-alert
+        v-if="pendingSemanticProposals > 0"
+        type="warning"
+        show-icon
+        :closable="false"
+        style="margin-bottom: var(--dg-space-md)"
+      >
+        <template #title>
+          有 {{ pendingSemanticProposals }} 条待审语义本体/知识图谱演进提案（PROPOSED）等待人工 Diff 确认
+          <el-button
+            link
+            type="primary"
+            size="small"
+            style="margin-left: 8px"
+            @click="router.push({ path: '/metadata/semantic', query: { tab: 'proposals' } })"
+          >
+            前往审校
+          </el-button>
+        </template>
+      </el-alert>
 
       <div class="inbox-hint">
         共 {{ total }} 条；移出收件箱不会解决告警、复核敏感标签或改变执行状态。

@@ -1,7 +1,8 @@
 import { Type } from '@earendil-works/pi-ai'
 import type { AgentTool } from '@earendil-works/pi-agent-core'
 import { config } from './config.js'
-import type { RunContext } from './types.js'
+import { isToolPermittedBySkills, type SkillDefinition } from './skills.js'
+import type { ProposalSummary, RunContext } from './types.js'
 
 interface ApiEnvelope<T> {
   success: boolean
@@ -16,14 +17,26 @@ export interface NavigateTarget {
   query?: Record<string, string>
 }
 
+export interface ToolCallbacks {
+  skills: Map<string, SkillDefinition>
+  activeSkills: Set<string>
+  onSkillActivated?: (skill: SkillDefinition) => void
+  onNavigate?: (target: NavigateTarget) => void
+  onConsentRequired?: (proposal: ProposalSummary) => void
+}
+
 const NAVIGABLE_ROUTES = new Set([
   '/metadata/datasources',
   '/metadata/catalog',
+  '/metadata/semantic',
   '/insight/ask',
 ])
 
 async function callBackend<T>(context: RunContext, path: string,
                               init: RequestInit = {}): Promise<T> {
+  if (!context.userId || !context.userId.trim()) {
+    throw new Error('缺少真实用户上下文 userId，拒绝调用平台工具（CONSTITUTION C4）')
+  }
   const response = await fetch(config.backendUrl + path, {
     ...init,
     headers: {
@@ -31,7 +44,7 @@ async function callBackend<T>(context: RunContext, path: string,
       'X-Agent-Token': config.agentToken,
       // 工具端点的调用者不是 Node 服务，而是发起这次对话的真实用户。
       // 这些头由 Java 代理注入 userId 后随会话带下来，Java 侧再按 userId 重新解析权限。
-      'X-Agent-User-Id': context.userId ?? '',
+      'X-Agent-User-Id': context.userId,
       'X-Agent-Username': context.username,
       'X-Agent-Workspace-Id': context.workspaceId,
       'X-Agent-Admin': String(Boolean(context.platformAdmin)),
@@ -66,14 +79,81 @@ function toolError(message: string) {
 }
 
 /**
- * Agent 工具只调用平台内部工具端点，不直接碰数据库/业务数据源。
- * 权限、脱敏、审计和 workspace 校验都在 Java 侧完成。
- *
- * `onNavigate` 不是后端调用：它把“该看哪个页面”作为 SSE 事件推给前端，
- * 由前端路由切换。工具本身仍然只做确定性动作。
+ * 写操作统一生成 PENDING 提案（闭合 OWASP ASI09）：
+ * 1. 先检查当前会话是否已激活授权该工具的 SKILL.md（A0.2 allowed-tools）；
+ * 2. 调用 Java /api/v1/internal/agent/proposals 落库 PENDING 提案（不直接修改平台数据）；
+ * 3. 通过 SSE consent_required 推给前端宿主渲染独立确认弹窗；
+ * 4. 返回 PENDING_CONSENT 结果要求模型停下等待用户在宿主 UI 点击确认。
  */
-export function buildTools(context: RunContext,
-                           onNavigate?: (target: NavigateTarget) => void): AgentTool<any>[] {
+async function proposeWriteAction(
+  toolName: string,
+  actionType: string,
+  payload: Record<string, unknown>,
+  context: RunContext,
+  callbacks: ToolCallbacks,
+) {
+  const gate = isToolPermittedBySkills(toolName, callbacks.activeSkills, callbacks.skills)
+  if (!gate.allowed) {
+    const hint = gate.requiredSkillHint
+      ? `请先调用 activate_skill("${gate.requiredSkillHint}") 加载对应技能规程后再发起操作。`
+      : '当前会话未激活包含该写工具的技能包。'
+    return toolError(`工具 ${toolName} 尚未解锁（A0.2 最小工具作用域）：${hint}`)
+  }
+  try {
+    const proposal = await callBackend<ProposalSummary>(
+      context,
+      '/api/v1/internal/agent/proposals',
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          conversationId: context.conversationId,
+          actionType,
+          payload,
+        }),
+      },
+    )
+    callbacks.onConsentRequired?.(proposal)
+    return toolResult(
+      `已生成待宿主确认提案「${proposal.title}」（ID: ${proposal.id}），等待用户在宿主界面确认后执行`,
+      {
+        pendingConsent: true,
+        proposal,
+        instruction: '写操作尚未落库执行。请用简洁中文向用户展示待确认参数，并提示用户在右侧/弹窗的宿主确认框中点击“确认执行”或“拒绝”。严禁在未确认前声称已完成。',
+      },
+    )
+  } catch (error) {
+    return toolError(`生成写操作提案失败：${messageOf(error)}`)
+  }
+}
+
+/**
+ * Agent 工具只调用平台内部工具端点，不直接碰数据库/业务数据源。
+ * 权限、脱敏、审计、宿主确认和 workspace 校验都在 Java 侧完成。
+ */
+export function buildTools(context: RunContext, callbacks: ToolCallbacks): AgentTool<any>[] {
+  const activateSkill: AgentTool<any> = {
+    name: 'activate_skill',
+    label: '激活技能规程',
+    description: '按需加载指定 SKILL.md 技能的完整操作步骤（Level 2 渐进披露）并解锁其最小作用域工具。',
+    parameters: Type.Object({
+      name: Type.String({ description: '技能名称（kebab-case，来自系统提示中的技能索引）' }),
+    }),
+    execute: async (_toolCallId, rawParams: any) => {
+      const name = String(rawParams?.name ?? '').trim()
+      const skill = callbacks.skills.get(name)
+      if (!skill) {
+        return toolError(`未找到技能「${name}」，可用技能：${[...callbacks.skills.keys()].join(', ') || '无'}`)
+      }
+      callbacks.activeSkills.add(skill.name)
+      callbacks.onSkillActivated?.(skill)
+      return toolResult(`已加载技能「${skill.name}」`, {
+        name: skill.name,
+        allowedTools: skill.allowedTools,
+        instructions: skill.body,
+      })
+    },
+  }
+
   const listDatasets: AgentTool<any> = {
     name: 'list_datasets',
     label: '列出数据集',
@@ -116,10 +196,10 @@ export function buildTools(context: RunContext,
   const askData: AgentTool<any> = {
     name: 'ask_data',
     label: '数据查询',
-    description: '对当前数据集发起自然语言数据查询（SuperSonic NL2SQL）。回答统计、趋势、排名、金额等问题时使用。',
+    description: '经平台原生语义本体引擎发起受治理的自然语言数据查询（确定性编译 + 脱敏 + 审计指纹）。回答统计、趋势、排名、金额等问题时使用。',
     parameters: Type.Object({
       question: Type.String({ description: '完整、明确的数据问题' }),
-      dataSetId: Type.Optional(Type.Number({ description: '可选数据集 ID；不填使用当前选中的数据集' })),
+      dataSetId: Type.Optional(Type.Number({ description: '可选语义主题 ID；不填使用当前选中的主题' })),
     }),
     execute: async (_toolCallId, rawParams: any) => {
       const params = rawParams as { question: string; dataSetId?: number }
@@ -137,10 +217,18 @@ export function buildTools(context: RunContext,
         const rows = Array.isArray(answer?.rows) ? answer.rows.slice(0, 20) : []
         return {
           content: text({
+            state: answer?.state ?? 'SUCCESS',
             summary: answer?.summary ?? '查询完成',
             rowCount: answer?.rowCount ?? rows.length,
             columns: answer?.columns ?? [],
             rows,
+            maskedColumns: answer?.maskedColumns ?? [],
+            semanticSnapshotRefs: answer?.semanticSnapshotRefs ?? [],
+            auditFingerprint: answer?.auditFingerprint ?? null,
+            appliedExclusions: answer?.appliedExclusions ?? [],
+            clarifications: answer?.clarifications ?? [],
+            executedSpec: answer?.executedSpec ?? null,
+            chartSpec: answer?.chartSpec ?? null,
           }),
           details: { answer },
         }
@@ -150,11 +238,113 @@ export function buildTools(context: RunContext,
     },
   }
 
+  const searchSemanticSubgraph: AgentTool<any> = {
+    name: 'search_semantic_subgraph',
+    label: '检索语义知识子图',
+    description: '在平台单一语义本体与业务知识图谱中做 k-Hop 受控子图检索（逐跳 ACL 剪枝），获取已发布指标、维度、物理映射、口径避坑与排除关系。',
+    parameters: Type.Object({
+      query: Type.String({ description: '业务关键词、指标名或用户自然语言问题' }),
+      maxHops: Type.Optional(Type.Number({ description: '最大跳数（1-3，默认 2）' })),
+    }),
+    execute: async (_toolCallId, rawParams: any) => {
+      const params = rawParams as { query: string; maxHops?: number }
+      try {
+        const result = await callBackend<any>(context, '/api/v1/internal/agent/semantic/subgraph', {
+          method: 'POST',
+          body: JSON.stringify({
+            query: params.query,
+            maxHops: params.maxHops ?? 2,
+            topK: 6,
+            externalModel: true,
+          }),
+        })
+        return {
+          content: text(result),
+          details: { subgraph: result },
+        }
+      } catch (error) {
+        return toolError(`语义子图检索失败：${messageOf(error)}`)
+      }
+    },
+  }
+
+  const getSemanticObject: AgentTool<any> = {
+    name: 'get_semantic_object',
+    label: '查看语义对象详情',
+    description: '按 Object ID 读取单个语义对象的完整定义、Standard 绑定与 AI 业务理解卡（只读）。',
+    parameters: Type.Object({
+      objectId: Type.String({ description: '语义对象 ID' }),
+    }),
+    execute: async (_toolCallId, rawParams: any) => {
+      const params = rawParams as { objectId: string }
+      try {
+        const obj = await callBackend<any>(
+          context,
+          `/api/v1/internal/agent/semantic/objects/${encodeURIComponent(params.objectId)}`,
+        )
+        return {
+          content: text(obj),
+          details: { semanticObject: obj },
+        }
+      } catch (error) {
+        return toolError(`读取语义对象失败：${messageOf(error)}`)
+      }
+    },
+  }
+
+  const executeSemanticQuery: AgentTool<any> = {
+    name: 'execute_semantic_query',
+    label: '执行结构化语义查询',
+    description: '基于已发布语义对象编码（SemanticQuerySpec）发起确定性编译与只读查询，严禁心算指标或直写 SQL（CONSTITUTION C3）。',
+    parameters: Type.Object({
+      metrics: Type.Array(Type.String({ description: '已发布指标 code 列表' })),
+      dimensions: Type.Optional(Type.Array(Type.String({ description: '可选分组维度/属性 code 列表' }))),
+      filters: Type.Optional(Type.Array(Type.Object({
+        objectCode: Type.String(),
+        op: Type.String(),
+        values: Type.Array(Type.String()),
+      }))),
+      timeRange: Type.Optional(Type.Object({
+        dimensionCode: Type.String(),
+        start: Type.String(),
+        end: Type.String(),
+      })),
+      limit: Type.Optional(Type.Number()),
+    }),
+    execute: async (_toolCallId, rawParams: any) => {
+      try {
+        const answer = await callBackend<any>(context, '/api/v1/internal/agent/semantic/query', {
+          method: 'POST',
+          body: JSON.stringify(rawParams ?? {}),
+        })
+        const rows = Array.isArray(answer?.rows) ? answer.rows.slice(0, 20) : []
+        return {
+          content: text({
+            state: answer?.state ?? 'SUCCESS',
+            summary: answer?.summary ?? '执行完成',
+            sql: answer?.sql ?? null,
+            rowCount: answer?.rowCount ?? rows.length,
+            columns: answer?.columns ?? [],
+            rows,
+            maskedColumns: answer?.maskedColumns ?? [],
+            semanticSnapshotRefs: answer?.semanticSnapshotRefs ?? [],
+            auditFingerprint: answer?.auditFingerprint ?? null,
+            appliedExclusions: answer?.appliedExclusions ?? [],
+            executedSpec: answer?.executedSpec ?? null,
+            chartSpec: answer?.chartSpec ?? null,
+          }),
+          details: { answer },
+        }
+      } catch (error) {
+        return toolError(`结构化语义查询失败：${messageOf(error)}`)
+      }
+    },
+  }
+
   const createLocalDataSource: AgentTool<any> = {
     name: 'create_local_datasource',
-    label: '创建本地数据源',
-    description: '创建一个 LOCAL 类型的数据源，指向后端机器上的本地/NFS Parquet 目录。'
-      + '只在用户明确给出目录路径和名称后调用；不要猜测路径。',
+    label: '提案：创建本地数据源',
+    description: '提交创建 LOCAL 数据源的待确认提案（需先激活 parquet-local-onboarding 技能，并经宿主界面确认后才执行）。',
     parameters: Type.Object({
       name: Type.String({ description: '数据源名称，空间内唯一' }),
       rootPath: Type.String({ description: '后端进程能访问的绝对目录，例如 /data/lakehouse 或 /mnt/lake' }),
@@ -162,31 +352,20 @@ export function buildTools(context: RunContext,
     }),
     execute: async (_toolCallId, rawParams: any) => {
       const params = rawParams as { name: string; rootPath: string; description?: string }
-      try {
-        const datasource = await callBackend<any>(context,
-          '/api/v1/internal/agent/onboarding/local-datasource', {
-            method: 'POST',
-            body: JSON.stringify(params),
-          })
-        return toolResult(`已创建本地数据源「${datasource.name}」`, {
-          datasource: {
-            id: datasource.id,
-            name: datasource.name,
-            type: datasource.type,
-            status: datasource.status,
-            rootPath: datasource.databaseName,
-          },
-        })
-      } catch (error) {
-        return toolError(`创建本地数据源失败：${messageOf(error)}`)
-      }
+      return proposeWriteAction(
+        'create_local_datasource',
+        'CREATE_LOCAL_DATASOURCE',
+        { name: params.name, rootPath: params.rootPath, description: params.description },
+        context,
+        callbacks,
+      )
     },
   }
 
   const updateLocalDataSource: AgentTool<any> = {
     name: 'update_local_datasource',
-    label: '修改本地数据源',
-    description: '修改已创建的 LOCAL 数据源的名称、根目录或描述，用于测试失败后修正路径。',
+    label: '提案：修改本地数据源',
+    description: '提交修改 LOCAL 数据源配置的待确认提案（需经宿主确认后执行）。',
     parameters: Type.Object({
       dataSourceId: Type.String({ description: '数据源 ID' }),
       name: Type.Optional(Type.String({ description: '新名称；不填保持原值' })),
@@ -200,27 +379,18 @@ export function buildTools(context: RunContext,
         rootPath?: string
         description?: string
       }
-      try {
-        const datasource = await callBackend<any>(context,
-          `/api/v1/internal/agent/onboarding/local-datasource/${encodeURIComponent(params.dataSourceId)}`, {
-            method: 'PUT',
-            body: JSON.stringify({
-              name: params.name,
-              rootPath: params.rootPath,
-              description: params.description,
-            }),
-          })
-        return toolResult(`已更新本地数据源「${datasource.name}」`, {
-          datasource: {
-            id: datasource.id,
-            name: datasource.name,
-            status: datasource.status,
-            rootPath: datasource.databaseName,
-          },
-        })
-      } catch (error) {
-        return toolError(`修改本地数据源失败：${messageOf(error)}`)
-      }
+      return proposeWriteAction(
+        'update_local_datasource',
+        'UPDATE_LOCAL_DATASOURCE',
+        {
+          dataSourceId: params.dataSourceId,
+          name: params.name,
+          rootPath: params.rootPath,
+          description: params.description,
+        },
+        context,
+        callbacks,
+      )
     },
   }
 
@@ -285,9 +455,8 @@ export function buildTools(context: RunContext,
 
   const createParquetCatalog: AgentTool<any> = {
     name: 'create_parquet_catalog_source',
-    label: '创建 Parquet 目录来源',
-    description: '为 LOCAL/S3/MinIO/OSS 数据源创建 PARQUET_DIRECTORY 目录来源。'
-      + 'rootPath 可留空，表示直接使用数据源根目录。',
+    label: '提案：创建 Parquet 目录来源',
+    description: '提交创建 PARQUET_DIRECTORY 目录来源的待确认提案（需经宿主界面确认后执行）。',
     parameters: Type.Object({
       name: Type.String({ description: '目录来源名称，空间内唯一' }),
       dataSourceId: Type.String({ description: 'LOCAL 数据源 ID' }),
@@ -295,58 +464,36 @@ export function buildTools(context: RunContext,
     }),
     execute: async (_toolCallId, rawParams: any) => {
       const params = rawParams as { name: string; dataSourceId: string; rootPath?: string }
-      try {
-        const source = await callBackend<any>(context,
-          '/api/v1/internal/agent/onboarding/parquet-catalog', {
-            method: 'POST',
-            body: JSON.stringify(params),
-          })
-        return toolResult(`已创建目录来源「${source.name}」`, {
-          source: {
-            id: source.id,
-            name: source.name,
-            sourceType: source.sourceType,
-            dataSourceId: source.dataSourceId,
-            configJson: source.configJson,
-          },
-        })
-      } catch (error) {
-        return toolError(`创建目录来源失败：${messageOf(error)}`)
-      }
+      return proposeWriteAction(
+        'create_parquet_catalog_source',
+        'CREATE_PARQUET_CATALOG',
+        {
+          name: params.name,
+          dataSourceId: params.dataSourceId,
+          rootPath: params.rootPath,
+        },
+        context,
+        callbacks,
+      )
     },
   }
 
   const refreshCatalogSource: AgentTool<any> = {
     name: 'refresh_catalog_source',
-    label: '采集目录',
-    description: '对 Parquet 目录来源执行一次采集，读取 Parquet footer/schema/分区并写入平台元数据。',
+    label: '提案：采集目录',
+    description: '提交采集 Parquet 目录元数据的待确认提案（需经宿主确认后执行；只读元数据、不复制数据）。',
     parameters: Type.Object({
       sourceId: Type.String({ description: '目录来源 ID' }),
     }),
     execute: async (_toolCallId, rawParams: any) => {
       const params = rawParams as { sourceId: string }
-      try {
-        const result = await callBackend<any>(context,
-          `/api/v1/internal/agent/onboarding/parquet-catalog/${encodeURIComponent(params.sourceId)}/refresh`, {
-            method: 'POST',
-          })
-        return toolResult(
-          `采集完成：${result.datasets} 个数据集 / ${result.columns} 个字段`,
-          {
-            result: {
-              runId: result.runId,
-              status: result.status,
-              namespaces: result.namespaces,
-              datasets: result.datasets,
-              columns: result.columns,
-              durationMillis: result.durationMillis,
-              warnings: result.warnings ?? [],
-            },
-          },
-        )
-      } catch (error) {
-        return toolError(`采集目录失败：${messageOf(error)}`)
-      }
+      return proposeWriteAction(
+        'refresh_catalog_source',
+        'REFRESH_PARQUET_CATALOG',
+        { sourceId: params.sourceId },
+        context,
+        callbacks,
+      )
     },
   }
 
@@ -379,7 +526,7 @@ export function buildTools(context: RunContext,
       if (params.query?.highlight) {
         query.highlight = params.query.highlight
       }
-      onNavigate?.({ route: params.route, label: params.label, query })
+      callbacks.onNavigate?.({ route: params.route, label: params.label, query })
       return toolResult(`已切换到${params.label}`, {
         navigated: true,
         route: params.route,
@@ -390,8 +537,12 @@ export function buildTools(context: RunContext,
   }
 
   return [
+    activateSkill,
     listDatasets,
     askData,
+    searchSemanticSubgraph,
+    getSemanticObject,
+    executeSemanticQuery,
     createLocalDataSource,
     updateLocalDataSource,
     testDataSource,

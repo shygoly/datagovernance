@@ -54,10 +54,10 @@ Governance 已有 `Provenance / LineageRecord / AuditRecord / PolicyDecision`，
 | `conclusion` | enum | `CONFIRMED / INCONCLUSIVE` |
 | `insufficient_reason` | string? | `INCONCLUSIVE` 时必填 |
 | `evidence` | json | 证据引用数组，非空（见 §4）；本期以 TEXT 存规范化 JSON |
-| `model` | json | `{provider, name, version, endpointKind: SELF_HOSTED/EXTERNAL}`；本期以 TEXT 存 |
+| `model` | json | `{provider, name, version, endpointKind: SELF_HOSTED/EXTERNAL}`；本期以 TEXT 存（`endpointKind` 用于校验 `CONSTITUTION.md` C5 分级模型路由） |
 | `session_ref` | string? | 上游会话 ID（如 DeepAnalyze 的 `session_id`） |
 | `max_sensitivity` | enum | `L1 / L2 / L3 / L4 / UNKNOWN`；写入方声明，服务端只校验取值域 |
-| `content_digest` | string | 规范化 JSON 的 SHA-256；用于复现与后续锚定 |
+| `content_digest` | string | 规范化 JSON 的 SHA-256；用于复现与后续锚定（配合 §10 可复现审计指纹） |
 | `generated_at` | instant | 模型产出时间，与 `created_at` 分开 |
 
 ---
@@ -160,8 +160,15 @@ PUBLISHED ──AnalysisReportPublished──> UI / 后续 Intelligence
 
 ---
 
-## 10. 演进位（本期不做）
+## 10. 演进位（契约预留，后续按需补迁移）
 
+- **可复现审计指纹（对齐 `CONSTITUTION.md` C8）**：在既有 `content_digest` 基础上扩展结构化 `reproducibility_fingerprint`（JSON），完整绑定：
+  - `datasourceSnapshots[]`：数据源与表快照/版本标识；
+  - `standardVersions[]`：所依赖的语义模型与 `Standard` 版本；
+  - `operatorDigests[]`：执行的确定性规则、算子或 SQL 模板摘要；
+  - `knowledgeRef`：引用的编译型知识库（`knowledge/`）Commit SHA 或 `Fact` 版本集；
+  - `delegationChain`：人机操作委派链（发起人 `userId` → Agent NHI / `session_ref`）。
+- **分级模型路由校验（对齐 `CONSTITUTION.md` C5）**：当报告涉及 `max_sensitivity ≥ L3` 明细推理时，服务端校验 `model.endpointKind == SELF_HOSTED`，禁止未经脱敏的敏感明细经 `EXTERNAL` 模型产出结论。
 - **审核态**：`max_sensitivity ≥ L3` 的报告可要求第二人复核后再 `PUBLISHED`。
 - **锚定**：`content_digest` 可外锚（TSA / 链），平台当前无此基础设施，先留字段。
 - **结构化结论**：当前正文是 Markdown；若 Intelligence 要消费，再补 `findings[]` 数组。

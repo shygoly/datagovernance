@@ -2,6 +2,12 @@ package com.datagov.app.insight;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.datagov.app.insight.ChartSpecRecommender.ChartSpec;
+import com.datagov.app.insight.InsightQueryEngine.ClarificationOption;
+import com.datagov.app.insight.InsightQueryEngine.DatasetOption;
+import com.datagov.app.insight.InsightQueryEngine.EngineAskResult;
+import com.datagov.app.insight.InsightQueryEngine.InsightColumn;
+import com.datagov.app.insight.InsightQueryEngine.WarehouseSqlPass;
 import com.datagov.app.insight.entity.InsightQueryLog;
 import com.datagov.app.insight.mapper.InsightQueryLogMapper;
 import com.datagov.common.api.PageResult;
@@ -10,13 +16,12 @@ import com.datagov.common.error.ErrorCode;
 import com.datagov.common.id.Ids;
 import com.datagov.common.tenant.Caller;
 import com.datagov.common.tenant.WorkspaceContext;
-import com.datagov.governance.service.AuditService;
-import com.datagov.governance.service.AuditService.AuditEntry;
 import com.datagov.governance.service.AccessRequestService;
 import com.datagov.governance.service.AccessRequestService.GrantCoverage;
+import com.datagov.governance.service.AuditService;
+import com.datagov.governance.service.AuditService.AuditEntry;
+import com.datagov.metadata.service.SemanticQueryCompiler.SemanticQuerySpec;
 import com.datagov.metadata.service.SensitivityService;
-import com.datagov.platform.dto.CredentialSecret;
-import com.datagov.platform.service.CredentialService;
 import com.datagov.metadata.service.SensitivityService.SensitiveColumnView;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -26,17 +31,19 @@ import java.time.Instant;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.regex.Pattern;
 
 /**
- * 智能问数网关。
+ * 智能问数网关（原生语义引擎版 · OpenSpec: semantic-ontology-kernel）。
  *
- * <p>平台不生成 SQL,只做四件 SuperSonic 不该负责的事:
+ * <p>统一承担五项治理职责：
  * <ol>
- *   <li>身份与空间:从平台 JWT/WorkspaceContext 取用户,不用 SuperSonic 的登录态</li>
- *   <li>结果脱敏:按平台敏感标签兜底遮蔽 PII 列</li>
- *   <li>行数上限:避免把上游 1000 行原样吐给前端</li>
- *   <li>审计与事实记录:谁问了什么、生成了什么 SQL、遮蔽了哪些列</li>
+ *   <li>身份与空间：按平台 JWT / {@link WorkspaceContext} 实时鉴权，零外部共享服务账号；</li>
+ *   <li>单一语义源：底层委托 {@link InsightQueryEngine}（默认 {@link NativeInsightEngine}）基于 {@code dg-metadata} 语义内核确定性编译执行；</li>
+ *   <li>结果脱敏与临时放行：按敏感标签兜底遮蔽 PII，并对生效中的 {@link GrantCoverage} 留痕放行；</li>
+ *   <li>行数上限与拒答边界：截断上限、证据不足返 {@code INCONCLUSIVE}、多义口径返 {@code CLARIFY_NEEDED}；</li>
+ *   <li>审计与可复现指纹：记录查询日志、语义快照版本号与 SHA-256 审计指纹（CONSTITUTION C8）。</li>
  * </ol>
  */
 @Service
@@ -44,60 +51,75 @@ public class InsightQueryService {
 
     private static final Logger log = LoggerFactory.getLogger(InsightQueryService.class);
 
-    /**
-     * “这个数据域有哪些表/数据集”属于元数据问题，SuperSonic 的 parser 不处理；
-     * 命中后走数据集树回答，避免把 parser error 直接抛给用户。
-     */
     private static final Pattern CATALOG_QUESTION = Pattern.compile(
-            "(数据域|数据集|表).*(有哪些|清单|列表)|有哪些.*(表|数据集)|列出.*(表|数据集)",
+            "(数据域|数据集|表|主题).*(有哪些|清单|列表)|有哪些.*(表|数据集|主题)|列出.*(表|数据集|主题)",
             Pattern.CASE_INSENSITIVE);
 
-    private final SuperSonicClient client;
+    private static final Set<String> NON_ERROR_STATES = Set.of(
+            "SUCCESS", "COMPILED_ONLY", "CLARIFY_NEEDED", "INCONCLUSIVE", "METADATA");
+
+    private final InsightQueryEngine engine;
     private final InsightProperties properties;
     private final InsightQueryLogMapper logMapper;
     private final SensitivityService sensitivityService;
     private final AccessRequestService accessRequestService;
     private final AuditService auditService;
-    private final InsightSupersonicMappingService mappingService;
-    private final CredentialService credentialService;
 
-    public InsightQueryService(SuperSonicClient client,
+    public InsightQueryService(InsightQueryEngine engine,
                                InsightProperties properties,
                                InsightQueryLogMapper logMapper,
                                SensitivityService sensitivityService,
                                AccessRequestService accessRequestService,
-                               AuditService auditService,
-                               InsightSupersonicMappingService mappingService,
-                               CredentialService credentialService) {
-        this.client = client;
+                               AuditService auditService) {
+        this.engine = engine;
         this.properties = properties;
         this.logMapper = logMapper;
         this.sensitivityService = sensitivityService;
         this.accessRequestService = accessRequestService;
         this.auditService = auditService;
-        this.mappingService = mappingService;
-        this.credentialService = credentialService;
     }
 
-    private record ClientCredentials(String username, String password) {
-    }
-
-    public record AskRequest(String question, Long dataSetId, Integer agentId) {
+    public record AskRequest(String question, Long dataSetId, Integer agentId, SemanticQuerySpec semanticSpec) {
+        public AskRequest(String question, Long dataSetId, Integer agentId) {
+            this(question, dataSetId, agentId, null);
+        }
     }
 
     public record Answer(
             String queryId,
             String state,
             String sql,
-            List<SuperSonicClient.Column> columns,
+            List<InsightColumn> columns,
             List<Map<String, Object>> rows,
             int rowCount,
             boolean truncated,
             long elapsedMs,
             List<String> maskedColumns,
             List<String> grantIds,
-            String summary
+            String summary,
+            List<String> semanticSnapshotRefs,
+            String auditFingerprint,
+            List<String> appliedExclusions,
+            List<ClarificationOption> clarifications,
+            SemanticQuerySpec executedSpec,
+            ChartSpec chartSpec,
+            String executionMode,
+            String federationEngine,
+            List<String> warehousesUsed,
+            List<WarehouseSqlPass> warehouseSqls
     ) {
+        public Answer(String queryId, String state, String sql,
+                      List<InsightColumn> columns, List<Map<String, Object>> rows,
+                      int rowCount, boolean truncated, long elapsedMs,
+                      List<String> maskedColumns, List<String> grantIds, String summary,
+                      List<String> semanticSnapshotRefs, String auditFingerprint,
+                      List<String> appliedExclusions, List<ClarificationOption> clarifications,
+                      SemanticQuerySpec executedSpec, ChartSpec chartSpec) {
+            this(queryId, state, sql, columns, rows, rowCount, truncated, elapsedMs,
+                    maskedColumns, grantIds, summary, semanticSnapshotRefs, auditFingerprint,
+                    appliedExclusions, clarifications, executedSpec, chartSpec,
+                    null, null, List.of(), List.of());
+        }
     }
 
     public record ExportFile(String filename, byte[] content, int rowCount,
@@ -128,23 +150,21 @@ public class InsightQueryService {
         }
     }
 
-    public List<SuperSonicClient.DatasetOption> datasets() {
-        Caller caller = WorkspaceContext.require();
+    public List<DatasetOption> datasets() {
+        WorkspaceContext.require();
         WorkspaceContext.requireWorkspaceId();
-        ClientCredentials credentials = credentials(caller);
-        return client.datasets(credentials.username(), credentials.password());
+        return engine.datasets();
     }
 
     public Answer ask(AskRequest request) {
         Caller caller = WorkspaceContext.require();
-        // 问数事实必须落在某个空间里;平台管理员在未选空间时也不能匿名查业务数据。
         WorkspaceContext.requireWorkspaceId();
-        ClientCredentials credentials = credentials(caller);
         String question = request == null ? null : request.question();
-        if (question == null || question.isBlank()) {
+        SemanticQuerySpec explicitSpec = request == null ? null : request.semanticSpec();
+        if ((question == null || question.isBlank()) && explicitSpec == null) {
             throw new BizException(ErrorCode.SYS_VALIDATION_FAILED, "问题不能为空");
         }
-        question = question.trim();
+        question = question == null || question.isBlank() ? "结构化语义查询" : question.trim();
         if (question.length() > 2000) {
             throw new BizException(ErrorCode.SYS_VALIDATION_FAILED, "问题不能超过 2000 字");
         }
@@ -156,16 +176,16 @@ public class InsightQueryService {
         long started = System.currentTimeMillis();
         InsightQueryLog fact = newFact(caller, question, agentId, datasetId);
         try {
-            if (isCatalogQuestion(question)) {
-                return answerCatalogQuestion(caller, question, agentId, datasetId,
-                        credentials, started, fact);
+            if (explicitSpec == null && isCatalogQuestion(question)) {
+                return answerCatalogQuestion(caller, question, datasetId, started, fact);
             }
-            SuperSonicClient.AskResult result = client.ask(question, agentId, datasetId,
-                    credentials.username(), credentials.password());
-            if (!"SUCCESS".equalsIgnoreCase(result.state())) {
+            EngineAskResult result = engine.ask(question, datasetId, explicitSpec);
+            String state = result.state() == null ? "FAILED" : result.state().toUpperCase();
+            if (!NON_ERROR_STATES.contains(state)) {
                 throw new BizException(ErrorCode.GOV_INSIGHT_FAILED,
-                        "问数未成功: " + nullSafe(result.error(), result.state()));
+                        "问数未成功: " + nullSafe(result.error(), state));
             }
+
             List<SensitiveColumnView> sensitive = sensitivityService.sensitiveColumnNames();
             List<GrantCoverage> grants = accessRequestService.activeGrants(
                     caller.workspaceId(), caller.username());
@@ -189,7 +209,7 @@ public class InsightQueryService {
                     : masked.rows();
             long elapsed = System.currentTimeMillis() - started;
 
-            fact.setQueryState(result.state());
+            fact.setQueryState(state);
             fact.setGeneratedSql(truncate(result.sql(), 20000));
             fact.setRowCount(rows.size());
             fact.setElapsedMs(elapsed);
@@ -208,13 +228,20 @@ public class InsightQueryService {
                     true,
                     null,
                     "POST /api/v1/insight/ask",
-                    "dataset=" + datasetId + "; masked=" + masked.maskedColumns()
+                    "engine=" + engine.engineId() + "; dataset=" + datasetId + "; state=" + state
+                            + "; masked=" + masked.maskedColumns()
                             + "; grants=" + usedGrants
+                            + "; fingerprint=" + nullSafe(result.auditFingerprint(), "none")
                             + "; rows=" + rows.size() + "; elapsedMs=" + elapsed));
 
-            return new Answer(result.queryId(), result.state(), result.sql(),
+            return new Answer(result.queryId(), state, result.sql(),
                     result.columns(), rows, rows.size(), truncated, elapsed,
-                    masked.maskedColumns(), List.copyOf(usedGrants), result.summary());
+                    masked.maskedColumns(), List.copyOf(usedGrants), result.summary(),
+                    result.semanticSnapshotRefs(), result.auditFingerprint(),
+                    result.appliedExclusions(), result.clarifications(),
+                    result.executedSpec(), result.chartSpec(),
+                    result.executionMode(), result.federationEngine(),
+                    result.warehousesUsed(), result.warehouseSqls());
         } catch (RuntimeException ex) {
             long elapsed = System.currentTimeMillis() - started;
             fact.setSucceeded(false);
@@ -230,7 +257,7 @@ public class InsightQueryService {
                     false,
                     ex instanceof BizException biz ? biz.errorCode().code() : "SYS_INTERNAL_ERROR",
                     "POST /api/v1/insight/ask",
-                    "dataset=" + datasetId + "; elapsedMs=" + elapsed));
+                    "engine=" + engine.engineId() + "; dataset=" + datasetId + "; elapsedMs=" + elapsed));
             log.warn("智能问数失败 workspace={} user={} dataset={}",
                     caller.workspaceId(), caller.username(), datasetId, ex);
             if (ex instanceof BizException biz) {
@@ -252,10 +279,9 @@ public class InsightQueryService {
                         .toList();
         List<String> labels = answer.columns().isEmpty()
                 ? keys
-                : answer.columns().stream().map(SuperSonicClient.Column::name).toList();
+                : answer.columns().stream().map(InsightColumn::name).toList();
 
         StringBuilder csv = new StringBuilder("\uFEFF");
-        // 表头用业务名(状态/订单数),值仍按 key 取值;下游导入时列名可读。
         csv.append(labels.stream().map(InsightQueryService::csvCell)
                 .collect(java.util.stream.Collectors.joining(","))).append("\r\n");
         for (Map<String, Object> row : answer.rows()) {
@@ -267,8 +293,6 @@ public class InsightQueryService {
             }
             csv.append("\r\n");
         }
-        // labels 目前只用于审计/未来加表头别名;CSV 表头用真实 key,避免
-        // “中文表头 + 英文值”在下游导入时对不上列。
         auditService.record(new AuditEntry(
                 AuditService.EXPORT,
                 "INSIGHT_EXPORT",
@@ -279,7 +303,9 @@ public class InsightQueryService {
                 null,
                 "POST /api/v1/insight/export",
                 "rows=" + answer.rowCount() + "; masked=" + answer.maskedColumns()
-                        + "; grants=" + answer.grantIds() + "; labels=" + labels));
+                        + "; grants=" + answer.grantIds()
+                        + "; fingerprint=" + nullSafe(answer.auditFingerprint(), "none")
+                        + "; labels=" + labels));
         return new ExportFile("insight-" + System.currentTimeMillis() + ".csv",
                 csv.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8),
                 answer.rowCount(), answer.maskedColumns());
@@ -296,7 +322,7 @@ public class InsightQueryService {
                         .toList();
         List<String> labels = answer.columns().isEmpty()
                 ? keys
-                : answer.columns().stream().map(SuperSonicClient.Column::name).toList();
+                : answer.columns().stream().map(InsightColumn::name).toList();
         try (var workbook = new org.apache.poi.xssf.usermodel.XSSFWorkbook();
              var output = new java.io.ByteArrayOutputStream()) {
             var sheet = workbook.createSheet("问数结果");
@@ -333,7 +359,8 @@ public class InsightQueryService {
                     "POST /api/v1/insight/export/xlsx",
                     "format=xlsx; rows=" + answer.rowCount()
                             + "; masked=" + answer.maskedColumns()
-                            + "; grants=" + answer.grantIds()));
+                            + "; grants=" + answer.grantIds()
+                            + "; fingerprint=" + nullSafe(answer.auditFingerprint(), "none")));
             return new ExportFile("insight-" + System.currentTimeMillis() + ".xlsx",
                     output.toByteArray(), answer.rowCount(), answer.maskedColumns());
         } catch (java.io.IOException e) {
@@ -347,8 +374,7 @@ public class InsightQueryService {
             return "";
         }
         String text = String.valueOf(value);
-        if (text.contains(",") || text.contains("\"") || text.contains("\n")
-                || text.contains("\r")) {
+        if (text.contains(",") || text.contains("\"") || text.contains("\n") || text.contains("\r")) {
             return "\"" + text.replace("\"", "\"\"") + "\"";
         }
         return text;
@@ -359,8 +385,7 @@ public class InsightQueryService {
         String workspaceId = WorkspaceContext.requireWorkspaceId();
         String term = keyword == null ? null : keyword.trim();
         if (term != null && term.length() > 200) {
-            throw new BizException(ErrorCode.SYS_VALIDATION_FAILED,
-                    "查询关键词不能超过 200 字");
+            throw new BizException(ErrorCode.SYS_VALIDATION_FAILED, "查询关键词不能超过 200 字");
         }
         String user = username == null ? null : username.trim();
         LambdaQueryWrapper<InsightQueryLog> wrapper = new LambdaQueryWrapper<InsightQueryLog>()
@@ -374,24 +399,6 @@ public class InsightQueryService {
         Page<InsightQueryLog> result = logMapper.selectPage(Page.of(page, size), wrapper);
         return PageResult.of(result.getRecords().stream().map(QueryLogView::from).toList(),
                 result.getTotal(), page, size);
-    }
-
-    private ClientCredentials credentials(Caller caller) {
-        var mapping = mappingService.find(caller.workspaceId(), caller.username());
-        if (mapping != null) {
-            CredentialSecret secret = credentialService.resolveSecret(
-                    caller.workspaceId(), mapping.getCredentialId());
-            if (secret.secret() == null || secret.secret().isBlank()) {
-                throw new BizException(ErrorCode.GOV_INSIGHT_NOT_CONFIGURED,
-                        "问数账号映射的凭据没有口令");
-            }
-            return new ClientCredentials(mapping.getSupersonicUsername(), secret.secret());
-        }
-        if (properties.getPassword() == null || properties.getPassword().isBlank()) {
-            throw new BizException(ErrorCode.GOV_INSIGHT_NOT_CONFIGURED,
-                    "当前用户没有 SuperSonic 账号映射,且未配置服务账号");
-        }
-        return new ClientCredentials(properties.getUsername(), properties.getPassword());
     }
 
     private InsightQueryLog newFact(Caller caller, String question, int agentId, long datasetId) {
@@ -408,34 +415,25 @@ public class InsightQueryService {
         return fact;
     }
 
-    /**
-     * 元数据问题：从当前数据集所属的“数据域”返回数据集清单。
-     *
-     * <p>这不是 SuperSonic 的语义查询，因此单独记录 queryState=METADATA；
-     * 不生成 SQL、不做脱敏，也不参与 grant 放行。它解决的是“这个数据域有哪些表”
-     * 这类 parser 无法回答的问题，而不是替代目录页。
-     */
-    private Answer answerCatalogQuestion(Caller caller, String question, int agentId,
-                                         long datasetId, ClientCredentials credentials,
-                                         long started, InsightQueryLog fact) {
-        List<SuperSonicClient.DatasetOption> all = client.datasets(
-                credentials.username(), credentials.password());
-        SuperSonicClient.DatasetOption selected = all.stream()
+    private Answer answerCatalogQuestion(Caller caller, String question,
+                                         long datasetId, long started, InsightQueryLog fact) {
+        List<DatasetOption> all = engine.datasets();
+        DatasetOption selected = all.stream()
                 .filter(item -> item.id() == datasetId)
                 .findFirst().orElse(null);
         String domain = selected == null ? null : selected.domain();
-        List<SuperSonicClient.DatasetOption> matched = all.stream()
+        List<DatasetOption> matched = all.stream()
                 .filter(item -> domain == null || domain.equals(item.domain()))
-                .sorted(Comparator.comparing(SuperSonicClient.DatasetOption::domain,
+                .sorted(Comparator.comparing(DatasetOption::domain,
                                 Comparator.nullsLast(String::compareTo))
-                        .thenComparing(SuperSonicClient.DatasetOption::name,
+                        .thenComparing(DatasetOption::name,
                                 Comparator.nullsLast(String::compareTo)))
                 .limit(200)
                 .toList();
-        List<SuperSonicClient.Column> columns = List.of(
-                new SuperSonicClient.Column("数据域", "domain", "STRING"),
-                new SuperSonicClient.Column("数据集", "dataset", "STRING"),
-                new SuperSonicClient.Column("数据集 ID", "datasetId", "LONG"));
+        List<InsightColumn> columns = List.of(
+                new InsightColumn("数据域", "domain", "STRING"),
+                new InsightColumn("语义主题", "dataset", "STRING"),
+                new InsightColumn("主题 ID", "datasetId", "LONG"));
         List<Map<String, Object>> rows = matched.stream()
                 .map(item -> Map.<String, Object>of(
                         "domain", item.domain() == null ? "" : item.domain(),
@@ -460,10 +458,11 @@ public class InsightQueryService {
                 "dataset=" + datasetId + "; metadata=true; domain=" + domain
                         + "; rows=" + rows.size()));
         String summary = domain == null
-                ? "未定位当前数据集，返回全部数据集（共 " + rows.size() + " 个）"
-                : "数据域「" + domain + "」下共 " + rows.size() + " 个数据集";
+                ? "未定位当前主题，返回全部语义主题（共 " + rows.size() + " 个）"
+                : "数据域「" + domain + "」下共 " + rows.size() + " 个语义主题";
         return new Answer(null, "METADATA", null, columns, rows, rows.size(),
-                false, elapsed, List.of(), List.of(), summary);
+                false, elapsed, List.of(), List.of(), summary,
+                List.of(), null, List.of(), List.of(), null, null);
     }
 
     private static boolean isCatalogQuestion(String question) {
@@ -471,7 +470,6 @@ public class InsightQueryService {
             return false;
         }
         String text = question.toLowerCase();
-        // “订单表有哪些字段”问的是字段，不是表清单，不能被目录意图截走。
         if (text.contains("字段") || text.contains("列")) {
             return false;
         }
@@ -482,10 +480,6 @@ public class InsightQueryService {
         return value == null || value.isBlank() ? fallback : value;
     }
 
-    /**
-     * grant 是否覆盖一列：类别必须相同，且列级别不高于 grant 的最高级别。
-     * 没有 category 的历史标签不参与放行 —— 宁可按原策略脱敏。
-     */
     private static boolean covers(GrantCoverage grant, SensitiveColumnView column) {
         if (grant.category() == null || column.category() == null) {
             return false;

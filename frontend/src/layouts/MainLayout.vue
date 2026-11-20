@@ -9,6 +9,7 @@ import { prefetchAllRoutes } from '@/router/prefetch'
 import MenuTree from './MenuTree.vue'
 import AgentDock from '@/components/agent/AgentDock.vue'
 import { confirmAction } from '@/utils/confirm'
+import type { MenuItem } from '@/types/permission'
 
 const auth = useAuthStore()
 const agentSession = useAgentSessionStore()
@@ -54,11 +55,54 @@ onMounted(() => {
  */
 const menus = computed(() => auth.menus)
 
-const activeMenu = computed(() => route.path)
+const activeMenu = computed(() => (route.meta.parentPath as string | undefined) || route.path)
 
-const breadcrumbs = computed(() => {
-  const title = route.meta.title as string | undefined
-  return title ? [title] : []
+interface BreadcrumbNode {
+  label: string
+  to?: string
+}
+
+function findMenuTrail(items: MenuItem[], targetPath: string): MenuItem[] | null {
+  for (const item of items) {
+    if (item.routePath === targetPath) {
+      return [item]
+    }
+    if (item.children?.length) {
+      const sub = findMenuTrail(item.children, targetPath)
+      if (sub) {
+        return [item, ...sub]
+      }
+    }
+  }
+  return null
+}
+
+const breadcrumbs = computed<BreadcrumbNode[]>(() => {
+  const title = (route.meta.title as string | undefined) ?? ''
+  const parentPath = route.meta.parentPath as string | undefined
+  const exactTrail = findMenuTrail(menus.value, route.path)
+  if (exactTrail?.length) {
+    return exactTrail.map((item, index) => ({
+      label: item.name,
+      to: index < exactTrail.length - 1 && item.routePath ? item.routePath : undefined,
+    }))
+  }
+  if (parentPath) {
+    const parentTrail = findMenuTrail(menus.value, parentPath)
+    const nodes: BreadcrumbNode[] = parentTrail?.length
+      ? parentTrail.map((item) => ({
+          label: item.name,
+          to: item.routePath || undefined,
+        }))
+      : []
+    if (title) {
+      nodes.push({ label: title })
+    }
+    if (nodes.length) {
+      return nodes
+    }
+  }
+  return title ? [{ label: title }] : []
 })
 
 async function onSwitchWorkspace(workspaceId: string) {
@@ -113,8 +157,12 @@ async function onLogout() {
     <el-container>
       <el-header class="layout__header">
         <el-breadcrumb separator="/">
-          <el-breadcrumb-item v-for="crumb in breadcrumbs" :key="crumb">
-            {{ crumb }}
+          <el-breadcrumb-item
+            v-for="(crumb, index) in breadcrumbs"
+            :key="`${crumb.label}-${index}`"
+            :to="crumb.to"
+          >
+            {{ crumb.label }}
           </el-breadcrumb-item>
         </el-breadcrumb>
 
@@ -207,14 +255,14 @@ async function onLogout() {
 
 .layout__menu :deep(.el-menu-item.is-active) {
   color: var(--dg-sidebar-text-active);
-  background-color: #263445;
+  background-color: var(--dg-sidebar-active);
 }
 
 .layout__header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  background: #fff;
+  background: var(--dg-surface);
   border-bottom: 1px solid var(--dg-border);
 }
 

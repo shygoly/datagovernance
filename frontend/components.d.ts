@@ -7,6 +7,7 @@ export {}
 /* prettier-ignore */
 declare module 'vue' {
   export interface GlobalComponents {
+    AgentConsentDialog: typeof import('./src/components/agent/AgentConsentDialog.vue')['default']
     AgentDock: typeof import('./src/components/agent/AgentDock.vue')['default']
     AppBootSkeleton: typeof import('./src/components/common/AppBootSkeleton.vue')['default']
     AssetGovernancePanel: typeof import('./src/components/metadata/AssetGovernancePanel.vue')['default']
@@ -79,8 +80,15 @@ declare module 'vue' {
     RouteProgress: typeof import('./src/components/common/RouteProgress.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
+    SemanticAiContextEditor: typeof import('./src/components/semantic/SemanticAiContextEditor.vue')['default']
+    SemanticGraphPanel: typeof import('./src/components/semantic/SemanticGraphPanel.vue')['default']
+    SemanticImpactDrawer: typeof import('./src/components/semantic/SemanticImpactDrawer.vue')['default']
+    SemanticMappingEditor: typeof import('./src/components/semantic/SemanticMappingEditor.vue')['default']
+    SemanticObjectDrawer: typeof import('./src/components/semantic/SemanticObjectDrawer.vue')['default']
+    SemanticPlaygroundPanel: typeof import('./src/components/semantic/SemanticPlaygroundPanel.vue')['default']
     SensitivityBadge: typeof import('./src/components/insight/SensitivityBadge.vue')['default']
     StatusTag: typeof import('./src/components/insight/StatusTag.vue')['default']
+    WarehouseCatalogPanel: typeof import('./src/components/semantic/WarehouseCatalogPanel.vue')['default']
   }
   export interface ComponentCustomProperties {
     vLoading: typeof import('element-plus/es')['ElLoadingDirective']

@@ -31,6 +31,15 @@ space:
     - LineageEdge              # 只追加,SQL 变化标 SUPERSEDED
     - SensitivityRule
     - SensitivityLabel
+    # 统一本体语义内核与轻量业务知识图谱(semantic-ontology-kernel + multisource-semantic-federation + metric-6d-ontology-verification)
+    - SemanticObject           # ENTITY / ATTRIBUTE / DIMENSION / FACT / METRIC(六维正交 + Provenance) / CONCEPT / PROCESS (scope=GLOBAL|WORKSPACE)
+    - WorkspaceWarehouse       # Workspace 多仓库挂载(PRIMARY/SECONDARY、cohort_code、命名空间、组合模式、联邦引擎)
+    - LogicalTable             # Warehouse Catalog 逻辑表投影(logical_size 选表权重 + alias_of_table_id 解决 Attribute Role)
+    - SemanticMapping          # 逻辑对象 <-> 多仓物理表列异构映射(含值归一化 JSON 与单位换算)
+    - SemanticLink             # STRUCTURAL (Join/依赖/类型化引用边 dimension_ref|metric_ref|column_ref + target_content_hash) + SEMANTIC/CAUSAL 知识图谱边
+    - SemanticObjectVersion    # 双时间态不可变发布快照 + SHA-256 content_digest(驱动 G5 STALE_REVIEW)
+    - SemanticValueDict        # L1/L2 安全维度值对齐字典(严禁 L3/L4)
+    - SemanticVerificationRecord # 度量四层验证闭环记录(G1-G5 静态图闸门 / 统计证伪 / 6 类探针 SMQ / 反模式检测)
     # 规则
     - Rule                     # 序号17 CLEANSING / TRANSFORM
     - RuleParam
@@ -59,6 +68,7 @@ space:
   states:
     DataSourceDef: [DRAFT, TESTING, AVAILABLE, UNREACHABLE, DISABLED, ARCHIVED]
     JobDefinition: [DRAFT, VALIDATED, PUBLISHED, SCHEDULING, PAUSED, OFFLINE, ARCHIVED]
+    SemanticObject: [DRAFT, PROPOSED, STALE_REVIEW, PUBLISHED, DEPRECATED]
 
   commands:
     - RegisterDataSource
@@ -85,6 +95,8 @@ space:
     - BindSchedule
     - PublishDefinition
     - OfflineDefinition
+    - ImportSemanticYaml
+    - RunMetricVerification
 
   queries:
     - GetDataSource
@@ -97,6 +109,11 @@ space:
     - GetLineage
     - GetDefinitionVersion
     - DiffDefinitionVersions
+    - ExportSemanticYaml
+    - ListSemanticDimensions
+    - ListSemanticMetrics
+    - ResolveSemanticRef
+    - CheckSemanticDeleteImpact
 
   events_produced:
     - DataSourceRegistered
@@ -121,6 +138,10 @@ space:
     - 已发布定义的修改产生新版本;运行中的 Execution 绑定其启动时的 defVersion
     - 只存 credentialRef,不存凭据明文
     - Cron 表达式是定义,触发不在此 Space
+    - 本体对象图是语义资产唯一真相,YAML 仅为短名/全 ID 双向投影
+    - 被引用的维度/度量禁止删除(删除保护);被引用节点 content_digest 变更自动触发引用方 STALE_REVIEW(G5)
+    - LLM 仅负责命名/描述/表达式初稿与候选建议,llm_inference 字段强制 requires_human_review=true,安全/租户列与 RLS 策略禁止 LLM 参与
+    - 统计证伪、探针查询或反模式检测未通过的指标禁止自动生效(证伪 FAIL 字段降级 LOW_CONFIDENCE 入人工队列)
 
   storage:
     primary: PostgreSQL(全表 workspace_id 行级隔离,ORM 强制注入过滤)

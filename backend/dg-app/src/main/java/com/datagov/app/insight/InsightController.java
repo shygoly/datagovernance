@@ -1,13 +1,19 @@
 package com.datagov.app.insight;
 
-import com.datagov.app.web.RequirePermission;
-import com.datagov.common.api.ApiResponse;
-import com.datagov.common.api.PageResult;
+import com.datagov.app.insight.InsightQueryEngine.DatasetOption;
 import com.datagov.app.insight.InsightQueryService.Answer;
 import com.datagov.app.insight.InsightQueryService.AskRequest;
 import com.datagov.app.insight.InsightQueryService.QueryLogView;
+import com.datagov.app.web.RequirePermission;
+import com.datagov.common.api.ApiResponse;
+import com.datagov.common.api.PageResult;
+import com.datagov.metadata.service.SemanticQueryCompiler.CompiledSemanticQuery;
+import com.datagov.metadata.service.SemanticQueryCompiler.SemanticQuerySpec;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -15,49 +21,55 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
-import org.springframework.http.HttpHeaders;
-import org.springframework.http.MediaType;
-import org.springframework.http.ResponseEntity;
-
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 
 /**
- * 智能问数(Phase 2 网关)。
+ * 智能问数网关（原生语义引擎 · OpenSpec: semantic-ontology-kernel）。
  *
- * <p>前端只认这个接口,不直连 SuperSonic。这样问数的身份、脱敏、行数上限和
- * 审计都由平台统一承担;将来把 SuperSonic 换掉,前端不需要改。
+ * <p>前端与 Agent 统一消费本网关，完全解耦并替代外部 SuperSonic 服务；
+ * 所有问数均基于 {@code dg-metadata} 语义本体内核确定性编译、脱敏与审计。
  */
 @RestController
 @RequestMapping("/api/v1/insight")
-@Tag(name = "智能问数", description = "受治理的自然语言问数网关")
+@Tag(name = "智能问数", description = "基于单一语义真理源的受治理自然语言与结构化问数网关")
 public class InsightController {
 
     private final InsightQueryService queryService;
+    private final NativeInsightEngine nativeEngine;
     private final InsightProperties properties;
 
-    public InsightController(InsightQueryService queryService, InsightProperties properties) {
+    public InsightController(InsightQueryService queryService,
+                             NativeInsightEngine nativeEngine,
+                             InsightProperties properties) {
         this.queryService = queryService;
+        this.nativeEngine = nativeEngine;
         this.properties = properties;
     }
 
     @PostMapping("/ask")
     @RequirePermission("insight:ask")
-    @Operation(summary = "自然语言问数",
-            description = "转发 SuperSonic,按平台敏感标签脱敏,并记录查询事实")
+    @Operation(summary = "自然语言或结构化语义问数",
+            description = "经原生语义内核确定性编译执行，按平台敏感标签脱敏并附可复现审计指纹")
     public ApiResponse<Answer> ask(@RequestBody AskRequest request) {
         return ApiResponse.ok(queryService.ask(request));
     }
 
+    @PostMapping("/semantic/compile")
+    @RequirePermission("insight:ask")
+    @Operation(summary = "确定性语义 SQL 编译预览",
+            description = "输入结构化 SemanticQuerySpec，返回确定性只读 SQL、防扇出标记与 SHA-256 审计指纹")
+    public ApiResponse<CompiledSemanticQuery> compileSemantic(@RequestBody SemanticQuerySpec spec) {
+        return ApiResponse.ok(nativeEngine.compilePreview(spec));
+    }
+
     @PostMapping("/export")
     @RequirePermission("insight:export")
-    @Operation(summary = "导出问数结果",
-            description = "重新执行同一问题并输出 CSV;导出单独授权,结果同样经过脱敏和审计")
+    @Operation(summary = "导出问数结果 CSV")
     public ResponseEntity<byte[]> export(@RequestBody AskRequest request) {
         var file = queryService.export(request);
-        String encodedName = java.net.URLEncoder.encode(file.filename(),
-                StandardCharsets.UTF_8);
+        String encodedName = java.net.URLEncoder.encode(file.filename(), StandardCharsets.UTF_8);
         return ResponseEntity.ok()
                 .header(HttpHeaders.CONTENT_DISPOSITION,
                         "attachment; filename=\"" + file.filename()
@@ -68,11 +80,10 @@ public class InsightController {
 
     @PostMapping("/export/xlsx")
     @RequirePermission("insight:export")
-    @Operation(summary = "导出问数结果为 XLSX")
+    @Operation(summary = "导出问数结果 XLSX")
     public ResponseEntity<byte[]> exportXlsx(@RequestBody AskRequest request) {
         var file = queryService.exportXlsx(request);
-        String encodedName = java.net.URLEncoder.encode(file.filename(),
-                StandardCharsets.UTF_8);
+        String encodedName = java.net.URLEncoder.encode(file.filename(), StandardCharsets.UTF_8);
         return ResponseEntity.ok()
                 .header(HttpHeaders.CONTENT_DISPOSITION,
                         "attachment; filename=\"" + file.filename()
@@ -84,14 +95,14 @@ public class InsightController {
 
     @GetMapping("/datasets")
     @RequirePermission("insight:ask")
-    @Operation(summary = "可选数据集", description = "来自 SuperSonic 的主题域/数据集树")
-    public ApiResponse<List<SuperSonicClient.DatasetOption>> datasets() {
+    @Operation(summary = "可选语义主题列表", description = "由 dg-metadata 已发布语义本体自动聚合生成")
+    public ApiResponse<List<DatasetOption>> datasets() {
         return ApiResponse.ok(queryService.datasets());
     }
 
     @GetMapping("/queries")
     @RequirePermission("insight:read")
-    @Operation(summary = "问数记录", description = "当前空间的问数事实,用于审计/质量复盘")
+    @Operation(summary = "问数审计记录")
     public ApiResponse<PageResult<QueryLogView>> queries(
             @RequestParam(defaultValue = "1") long page,
             @RequestParam(defaultValue = "20") long size,
@@ -103,14 +114,16 @@ public class InsightController {
 
     @GetMapping("/config")
     @RequirePermission("insight:ask")
-    @Operation(summary = "问数能力探测", description = "前端用它判断网关是否可用")
+    @Operation(summary = "问数能力探测")
     public ApiResponse<Map<String, Object>> config() {
         return ApiResponse.ok(Map.of(
                 "enabled", true,
+                "engine", properties.getEngine(),
+                "dialect", properties.getDialect(),
                 "masking", true,
                 "maxRows", properties.getMaxRows(),
                 "defaultDatasetId", properties.getDefaultDatasetId(),
                 "agentId", properties.getAgentId(),
-                "message", "问数请求请走 POST /api/v1/insight/ask"));
+                "message", "问数请求由平台原生语义本体内核确定性编译执行"));
     }
 }

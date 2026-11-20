@@ -1,5 +1,6 @@
 package com.datagov.app.insight;
 
+import com.datagov.app.insight.InsightQueryEngine.InsightColumn;
 import com.datagov.metadata.service.SensitivityService.SensitiveColumnView;
 import org.junit.jupiter.api.Test;
 
@@ -15,8 +16,8 @@ class InsightMaskingTest {
         List<Map<String, Object>> rows = List.of(Map.of("email", "a@b.com", "cnt", 3));
         InsightMasking.Masked masked = InsightMasking.mask(
                 rows,
-                List.of(new SuperSonicClient.Column("email", "email", "String"),
-                        new SuperSonicClient.Column("cnt", "cnt", "Int64")),
+                List.of(new InsightColumn("email", "email", "String"),
+                        new InsightColumn("cnt", "cnt", "Int64")),
                 "SELECT email, count() AS cnt FROM users GROUP BY email",
                 List.of(new SensitiveColumnView("email", "PII", "L2")));
 
@@ -30,7 +31,7 @@ class InsightMaskingTest {
         List<Map<String, Object>> rows = List.of(Map.of("_phone_", "13800000000"));
         InsightMasking.Masked masked = InsightMasking.mask(
                 rows,
-                List.of(new SuperSonicClient.Column("_phone_", "_phone_", "String")),
+                List.of(new InsightColumn("_phone_", "_phone_", "String")),
                 "SELECT phone AS `_phone_` FROM users",
                 List.of(new SensitiveColumnView("phone", "PII", "L3")));
 
@@ -43,8 +44,8 @@ class InsightMaskingTest {
         List<Map<String, Object>> rows = List.of(Map.of("username", "alice", "amount", 10));
         InsightMasking.Masked masked = InsightMasking.mask(
                 rows,
-                List.of(new SuperSonicClient.Column("username", "username", "String"),
-                        new SuperSonicClient.Column("amount", "amount", "Decimal")),
+                List.of(new InsightColumn("username", "username", "String"),
+                        new InsightColumn("amount", "amount", "Decimal")),
                 "SELECT username, amount FROM t",
                 List.of(new SensitiveColumnView("name", "PII", "L2")));
 

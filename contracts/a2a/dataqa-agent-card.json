@@ -1,0 +1,28 @@
+{
+  "protocolVersion": "1.0",
+  "name": "dataqa-governance-agent",
+  "description": "跨系统治理质检与异常归因智能体（对 datagov 只读元数据/日志，唯一受控写入为 create_quality_task）",
+  "version": "1.0.0",
+  "contractRef": "contracts/openapi/datagov-dataqa.yaml",
+  "authentication": {
+    "schemes": ["Bearer"],
+    "delegation": "Pass-through OA UserContext; never fallback to service account"
+  },
+  "capabilities": {
+    "streaming": false,
+    "opaqueTasks": true,
+    "inconclusiveFirstClass": true
+  },
+  "skills": [
+    {
+      "id": "quality-rule-recommendation",
+      "name": "质检规则推荐与三步编译",
+      "writeChannel": "create_quality_task"
+    },
+    {
+      "id": "execution-failure-attribution",
+      "name": "任务失败根因归因",
+      "readOnly": true
+    }
+  ]
+}

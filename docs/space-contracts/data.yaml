@@ -16,6 +16,7 @@ space:
     - SchemaDiscoveryResult     # 序号7 库/模式/表/字段/视图
     - QueryRequest
     - QueryResult
+    - FederatedQueryGateway    # 跨仓库只读联邦查询契约（StarRocks External Catalog + DuckDB 嵌入式内存联结）
     - FileObject                # 序号3/12 CSV/JSON
     - ApiEndpointResponse       # 序号4/13
     - TypeMappingSpec           # 序号9 异构类型映射

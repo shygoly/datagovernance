@@ -17,7 +17,7 @@ const router = useRouter()
 
 <style scoped>
 .hint {
-  color: #909399;
+  color: var(--dg-text-muted);
   font-size: 13px;
   margin-bottom: 12px;
 }

@@ -1,7 +1,56 @@
+import type { SemanticQuerySpec } from './semantic'
+
 export interface InsightColumn {
   name: string
   bizName?: string
   type?: string
+}
+
+export type InsightChartType =
+  | 'kpi'
+  | 'bar'
+  | 'horizontal_bar'
+  | 'stacked_bar'
+  | 'line'
+  | 'area'
+  | 'pie'
+  | 'scatter'
+  | 'funnel'
+  | 'table'
+
+export interface InsightDrilldownOption {
+  sourceDimensionCode: string
+  sourceField: string
+  nextDimensionCode: string
+  nextDimensionName: string
+  actionLabel: string
+}
+
+export interface InsightChartSpec {
+  chartType: InsightChartType
+  xField?: string | null
+  seriesField?: string | null
+  yFields: string[]
+  units?: Record<string, string>
+  dualAxis?: boolean
+  defaultSort?: 'DESC' | 'ASC' | 'NONE' | string
+  topN?: number | null
+  supportedTypes?: InsightChartType[]
+  drilldowns?: InsightDrilldownOption[]
+}
+
+export interface InsightClarificationOption {
+  code: string
+  name: string
+  disambiguation: string
+}
+
+export interface InsightWarehouseSqlPass {
+  warehouseCode: string
+  warehouseName: string
+  cohortCode?: string | null
+  dialect: string
+  sql: string
 }
 
 export interface InsightAnswer {
@@ -16,16 +65,29 @@ export interface InsightAnswer {
   maskedColumns: string[]
   grantIds?: string[]
   summary?: string
+  semanticSnapshotRefs?: string[]
+  auditFingerprint?: string | null
+  appliedExclusions?: string[]
+  clarifications?: InsightClarificationOption[]
+  executedSpec?: SemanticQuerySpec | null
+  chartSpec?: InsightChartSpec | null
+  executionMode?: string | null
+  federationEngine?: string | null
+  warehousesUsed?: string[]
+  warehouseSqls?: InsightWarehouseSqlPass[]
 }
 
 export interface InsightDataset {
   id: number
   name: string
   domain: string
+  viewId?: string
 }
 
 export interface InsightConfig {
   enabled: boolean
+  engine?: string
+  dialect?: string
   masking: boolean
   maxRows: number
   defaultDatasetId?: number
@@ -107,16 +169,6 @@ export interface InsightDashboardVersion {
   createdBy?: string
   createdAt: string
   itemCount: number
-}
-
-export interface InsightSupersonicMapping {
-  id: string
-  platformUsername: string
-  supersonicUsername: string
-  credentialId: string
-  enabled: boolean
-  createdBy?: string
-  updatedAt: string
 }
 
 export interface InsightDashboardAcl {

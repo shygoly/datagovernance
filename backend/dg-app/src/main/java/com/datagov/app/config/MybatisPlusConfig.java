@@ -34,4 +34,9 @@ public class MybatisPlusConfig {
 
         return interceptor;
     }
+
+    @Bean
+    public PgRlsMybatisInterceptor pgRlsMybatisInterceptor() {
+        return new PgRlsMybatisInterceptor();
+    }
 }

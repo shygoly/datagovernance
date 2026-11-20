@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import { ruleApi } from '@/api/rule'
+import { confirmDanger } from '@/utils/confirm'
 import type { Rule, RuleCategory, RuleKind, RuleKindInfo } from '@/types/rule'
 
 const loading = ref(false)
@@ -153,11 +154,10 @@ async function onSubmit() {
 }
 
 async function onDelete(row: Rule) {
-  await ElMessageBox.confirm(
-    `确定删除规则「${row.name}」吗?`,
-    '删除规则',
-    { type: 'warning' },
-  )
+  const confirmed = await confirmDanger(`确定删除规则「${row.name}」吗?`, '删除规则')
+  if (!confirmed) {
+    return
+  }
   await ruleApi.remove(row.id)
   ElMessage.success('已删除')
   await load()

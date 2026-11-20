@@ -1,0 +1,27 @@
+[
+  {
+    "id": "cap-01-multi-turn-drilldown",
+    "category": "insight-multiturn",
+    "prompt": "先看各科室门诊量，再下钻前两名科室的近 7 日趋势",
+    "required_skill": "insight-data-ask",
+    "expected_tools": ["ask_data"],
+    "expected_outcome": {
+      "http_status": 200,
+      "must_not_mutate_db": true
+    },
+    "pass_k_threshold": 0.8
+  },
+  {
+    "id": "cap-02-guided-parquet-end-to-end",
+    "category": "onboarding-flow",
+    "prompt": "引导完成本地 Parquet 数据源建源提案与目录页跳转",
+    "required_skill": "parquet-local-onboarding",
+    "expected_tools": ["activate_skill", "create_local_datasource"],
+    "expected_outcome": {
+      "must_emit_consent_required": true,
+      "proposal_status": "PENDING",
+      "must_not_mutate_db": true
+    },
+    "pass_k_threshold": 0.9
+  }
+]

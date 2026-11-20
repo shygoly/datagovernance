@@ -211,13 +211,14 @@ async function onRun(row: JobDefinition) {
     return
   }
   const execution = await jobApi.run(row.id)
-  ElMessageBox.confirm(
+  const goExecutions = await confirmAction(
     `执行已提交,记录 ID:${execution.id}`,
     '已提交',
     { confirmButtonText: '去看执行记录', cancelButtonText: '留在本页', type: 'success' },
   )
-    .then(() => router.push({ name: 'executions' }))
-    .catch(() => {})
+  if (goExecutions) {
+    void router.push({ name: 'executions' })
+  }
   await load()
 }
 

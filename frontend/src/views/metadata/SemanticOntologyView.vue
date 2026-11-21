@@ -53,6 +53,24 @@ const query = reactive({
 const drawerVisible = ref(false)
 const editingObject = ref<SemanticObject | null>(null)
 
+const yamlDialogVisible = ref(false)
+const yamlMode = ref<'short' | 'full'>('short')
+const yamlText = ref('')
+const yamlBusy = ref(false)
+const yamlPreview = ref<{
+  metricCount: number
+  resolvedRefs: Record<string, string>
+  warnings: string[]
+} | null>(null)
+const resolveShortName = ref('')
+const resolveResult = ref<{
+  status: string
+  shortName: string
+  canonicalId?: string | null
+  canonicalCode?: string | null
+  candidates: Array<{ id: string; code: string; name: string; objectType: string; editDistance: number }>
+} | null>(null)
+
 const typeGroups: Array<{ label: string; items: Array<{ value: SemanticObjectType; label: string }> }> = [
   {
     label: 'Layer 1 · 计算语义',
@@ -71,7 +89,18 @@ const typeGroups: Array<{ label: string; items: Array<{ value: SemanticObjectTyp
       { value: 'PROCESS', label: '业务流程 (PROCESS)' },
     ],
   },
+  {
+    label: 'Layer 3 · 目标与动作契约',
+    items: [
+      { value: 'TARGET', label: '业务目标 (TARGET)' },
+      { value: 'ACTION_TYPE', label: '动作契约 (ACTION_TYPE)' },
+    ],
+  },
 ]
+
+const layer3Objects = computed(() =>
+  allObjects.value.filter((item) => item.objectType === 'TARGET' || item.objectType === 'ACTION_TYPE'),
+)
 
 async function loadAll() {
   loading.value = true
@@ -174,6 +203,52 @@ function statusTagType(status: string): 'success' | 'warning' | 'info' | 'danger
   return 'info'
 }
 
+async function openYamlWorkbench() {
+  yamlDialogVisible.value = true
+  yamlPreview.value = null
+  resolveResult.value = null
+  await exportYaml()
+}
+
+async function exportYaml() {
+  yamlBusy.value = true
+  try {
+    const result = await semanticApi.exportYaml(yamlMode.value)
+    yamlText.value = result.yaml
+  } finally {
+    yamlBusy.value = false
+  }
+}
+
+async function previewImportYaml() {
+  if (!yamlText.value.trim()) {
+    ElMessage.warning('请粘贴 YAML/JSON 内容')
+    return
+  }
+  yamlBusy.value = true
+  try {
+    yamlPreview.value = await semanticApi.importYamlPreview(yamlText.value)
+    ElMessage.success(`预览完成：${yamlPreview.value.metricCount} 个度量候选`)
+  } finally {
+    yamlBusy.value = false
+  }
+}
+
+async function runResolveRef() {
+  const name = resolveShortName.value.trim()
+  if (!name) {
+    ElMessage.warning('请输入短名')
+    return
+  }
+  resolveResult.value = await semanticApi.resolveRef(name)
+}
+
+async function verifySelected(obj: SemanticObject) {
+  const result = await semanticApi.verifyObject(obj.id)
+  ElMessage.info(`${result.status}: ${(result.messages || []).slice(0, 3).join('; ') || '无消息'}`)
+  await loadAll()
+}
+
 onMounted(async () => {
   if (typeof route.query.tab === 'string') {
     activeTab.value = route.query.tab
@@ -193,6 +268,7 @@ onMounted(async () => {
     >
       <template #actions>
         <el-button size="small" @click="activeTab = 'playground'">编译与召回调试</el-button>
+        <el-button size="small" @click="openYamlWorkbench">YAML 导入/导出</el-button>
         <el-button v-if="canManage" type="primary" size="small" @click="openCreate">
           新建语义对象
         </el-button>
@@ -328,20 +404,53 @@ onMounted(async () => {
                     </el-tag>
                   </template>
                 </el-table-column>
-                <el-table-column label="状态与版本" width="130">
+                <el-table-column label="状态与版本" width="200">
                   <template #default="{ row }">
                     <el-tag size="small" :type="statusTagType(row.status)">
                       {{ row.status }} · v{{ row.versionNo }}
+                    </el-tag>
+                    <el-tag
+                      v-if="row.requiresHumanReview || String(row.verified?.status || '').includes('STALE')"
+                      size="small"
+                      type="danger"
+                      style="margin-left: 4px"
+                    >
+                      {{ String(row.verified?.status || '').includes('STALE') ? 'STALE_REVIEW' : '待复核' }}
+                    </el-tag>
+                    <el-tag
+                      v-else-if="row.provenance?.source === 'llm_inference' || row.sourceKind === 'LLM'"
+                      size="small"
+                      type="warning"
+                      style="margin-left: 4px"
+                    >
+                      LLM
+                    </el-tag>
+                    <el-tag
+                      v-else-if="row.verified?.status === 'PASS' || row.verified?.gatesPass"
+                      size="small"
+                      type="success"
+                      style="margin-left: 4px"
+                    >
+                      verified
                     </el-tag>
                   </template>
                 </el-table-column>
                 <el-table-column label="更新时间" width="155">
                   <template #default="{ row }">{{ formatDateTime(row.updatedAt) }}</template>
                 </el-table-column>
-                <el-table-column label="操作" width="140" align="right">
+                <el-table-column label="操作" width="180" align="right">
                   <template #default="{ row }">
                     <el-button link type="primary" size="small" @click="openEdit(row as SemanticObject)">
                       配置
+                    </el-button>
+                    <el-button
+                      v-if="canManage && row.objectType === 'METRIC'"
+                      link
+                      type="warning"
+                      size="small"
+                      @click="verifySelected(row as SemanticObject)"
+                    >
+                      验证
                     </el-button>
                     <el-button
                       v-if="canPublish && row.status !== 'PUBLISHED' && row.status !== 'REJECTED'"
@@ -377,6 +486,53 @@ onMounted(async () => {
               </div>
             </div>
           </div>
+        </el-tab-pane>
+
+        <el-tab-pane label="目标与动作契约（Layer 3）" name="layer3">
+          <el-alert
+            type="info"
+            :closable="false"
+            show-icon
+            title="TARGET 声明硬不变量与软目标；ACTION_TYPE 声明 L0–L3 授权、参数包络、Dry-Run 与补偿契约。发布后才能被 FlowCompiler 引用。"
+            style="margin-bottom: var(--dg-space-md)"
+          />
+          <el-empty v-if="!layer3Objects.length" description="尚未声明 Target / ActionType" />
+          <el-table v-else :data="layer3Objects" size="small" border>
+            <el-table-column label="对象" min-width="220">
+              <template #default="{ row }">
+                <div class="obj-name" @click="openEdit(row as SemanticObject)">{{ row.name }}</div>
+                <div class="obj-code">{{ row.code }}</div>
+              </template>
+            </el-table-column>
+            <el-table-column prop="objectType" label="类型" width="120" />
+            <el-table-column label="规格摘要" min-width="320">
+              <template #default="{ row }">
+                <code class="spec-preview">{{ JSON.stringify(row.spec) }}</code>
+              </template>
+            </el-table-column>
+            <el-table-column label="状态" width="150">
+              <template #default="{ row }">
+                <el-tag size="small" :type="statusTagType(row.status)">{{ row.status }} · v{{ row.versionNo }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="更新时间" width="160">
+              <template #default="{ row }">{{ formatDateTime(row.updatedAt) }}</template>
+            </el-table-column>
+            <el-table-column label="操作" width="150" align="right">
+              <template #default="{ row }">
+                <el-button link type="primary" size="small" @click="openEdit(row as SemanticObject)">配置</el-button>
+                <el-button
+                  v-if="canPublish && row.status !== 'PUBLISHED' && row.status !== 'REJECTED'"
+                  link
+                  type="success"
+                  size="small"
+                  @click="publish(row as SemanticObject)"
+                >
+                  发布
+                </el-button>
+              </template>
+            </el-table-column>
+          </el-table>
         </el-tab-pane>
 
         <el-tab-pane label="多仓库目录（Warehouse Catalog）" name="warehouses">
@@ -428,6 +584,64 @@ onMounted(async () => {
       :can-publish="canPublish"
       @updated="loadAll"
     />
+
+    <el-dialog
+      v-model="yamlDialogVisible"
+      title="metric-6d YAML 工作台"
+      width="720px"
+      destroy-on-close
+    >
+      <div class="yaml-toolbar">
+        <el-radio-group v-model="yamlMode" size="small" @change="exportYaml">
+          <el-radio-button value="short">短名模式</el-radio-button>
+          <el-radio-button value="full">全限定模式</el-radio-button>
+        </el-radio-group>
+        <el-button size="small" :loading="yamlBusy" @click="exportYaml">重新导出</el-button>
+        <el-button
+          v-if="canManage"
+          type="primary"
+          size="small"
+          :loading="yamlBusy"
+          @click="previewImportYaml"
+        >
+          导入预览（不落库）
+        </el-button>
+      </div>
+      <el-input
+        v-model="yamlText"
+        type="textarea"
+        :rows="14"
+        class="yaml-editor"
+        placeholder="YAML / JSON 语义资产"
+      />
+      <div v-if="yamlPreview" class="yaml-preview">
+        <el-tag size="small">度量候选 {{ yamlPreview.metricCount }}</el-tag>
+        <el-tag size="small" type="info">已解析引用 {{ Object.keys(yamlPreview.resolvedRefs || {}).length }}</el-tag>
+        <div v-if="yamlPreview.warnings?.length" class="yaml-warnings">
+          <div v-for="(w, i) in yamlPreview.warnings" :key="i" class="yaml-warn-line">{{ w }}</div>
+        </div>
+      </div>
+      <el-divider />
+      <div class="resolve-row">
+        <el-input
+          v-model="resolveShortName"
+          size="small"
+          placeholder="短名解析，如 gmv / region"
+          style="width: 240px"
+          @keyup.enter="runResolveRef"
+        />
+        <el-button size="small" @click="runResolveRef">resolve_ref</el-button>
+        <el-tag v-if="resolveResult" size="small" :type="resolveResult.status === 'RESOLVED' ? 'success' : 'warning'">
+          {{ resolveResult.status }}
+          <template v-if="resolveResult.canonicalCode"> · {{ resolveResult.canonicalCode }}</template>
+        </el-tag>
+      </div>
+      <ul v-if="resolveResult?.candidates?.length" class="resolve-candidates">
+        <li v-for="c in resolveResult.candidates" :key="c.id">
+          {{ c.code }}（{{ c.objectType }} · dist={{ c.editDistance }}）
+        </li>
+      </ul>
+    </el-dialog>
   </div>
 </template>
 
@@ -520,5 +734,56 @@ onMounted(async () => {
   display: flex;
   justify-content: flex-end;
   margin-top: var(--dg-space-md);
+}
+.yaml-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--dg-space-sm);
+  margin-bottom: var(--dg-space-md);
+  align-items: center;
+}
+.yaml-editor :deep(textarea) {
+  font-family: var(--dg-font-mono);
+  font-size: 12px;
+}
+.yaml-preview {
+  margin-top: var(--dg-space-md);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--dg-space-sm);
+  align-items: flex-start;
+}
+.yaml-warnings {
+  width: 100%;
+  margin-top: var(--dg-space-sm);
+  padding: var(--dg-space-sm);
+  background: var(--dg-surface-muted);
+  border: 1px solid var(--dg-border);
+  border-radius: var(--dg-radius);
+  max-height: 140px;
+  overflow: auto;
+}
+.yaml-warn-line {
+  font-size: 12px;
+  color: var(--dg-warning);
+  line-height: 1.4;
+}
+.resolve-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--dg-space-sm);
+  align-items: center;
+}
+.resolve-candidates {
+  margin: var(--dg-space-sm) 0 0;
+  padding-left: 1.2em;
+  font-size: 12px;
+  color: var(--dg-text-muted);
+}
+.spec-preview {
+  font-family: var(--dg-font-mono);
+  font-size: 11px;
+  color: var(--dg-text-muted);
+  word-break: break-all;
 }
 </style>

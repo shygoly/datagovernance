@@ -1,0 +1,7 @@
+{
+  "id": "g01_null_as_zero_reject",
+  "kind": "null_as_zero",
+  "expression": "COALESCE(amount, 0)",
+  "null_as_zero": false,
+  "expect_error": "NULL_AS_ZERO_FORBIDDEN"
+}

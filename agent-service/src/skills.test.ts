@@ -11,10 +11,16 @@ describe('A0.2 SKILL.md progressive disclosure runtime', () => {
     const skills = loadSkills(SKILLS_DIR)
     assert.ok(skills.has('parquet-local-onboarding'))
     assert.ok(skills.has('insight-data-ask'))
+    assert.ok(skills.has('chance-ai-mapping'))
+    assert.ok(skills.has('chance-hcc-ask'))
+    assert.ok(skills.has('lineage-impact-attribution'))
 
     const index = renderSkillIndex(skills)
     assert.ok(index.includes('parquet-local-onboarding'))
     assert.ok(index.includes('insight-data-ask'))
+    assert.ok(index.includes('chance-ai-mapping'))
+    assert.ok(index.includes('chance-hcc-ask'))
+    assert.ok(index.includes('lineage-impact-attribution'))
     assert.ok(!index.includes('标准执行步骤'), 'Level 1 index must not inline Level 2 instructions')
   })
 
@@ -28,10 +34,19 @@ describe('A0.2 SKILL.md progressive disclosure runtime', () => {
 
     // Read-only tools stay allowed
     assert.equal(isToolPermittedBySkills('list_datasets', active, skills).allowed, true)
+    assert.equal(isToolPermittedBySkills('list_mapping_proposals', active, skills).allowed, true)
+    // P3-3：血缘工具为只读，默认可用（无需激活技能）
+    assert.equal(isToolPermittedBySkills('lineage_trace_column', active, skills).allowed, true)
+    assert.equal(isToolPermittedBySkills('lineage_impact_analysis', active, skills).allowed, true)
 
     // Activating skill unlocks declared write tool
     active.add('parquet-local-onboarding')
     assert.equal(isToolPermittedBySkills('create_local_datasource', active, skills).allowed, true)
+
+    assert.equal(isToolPermittedBySkills('suggest_field_mappings', active, skills).allowed, false)
+    active.add('chance-ai-mapping')
+    assert.equal(isToolPermittedBySkills('suggest_field_mappings', active, skills).allowed, true)
+    assert.equal(isToolPermittedBySkills('submit_mapping_decision', active, skills).allowed, true)
   })
 })
 

@@ -143,3 +143,21 @@
    - ✅ 落地 `McpServerController`（`/api/v1/mcp`）、`AgentCardController`（`/.well-known/agent-card.json`）、`contracts/mcp/`、`contracts/a2a/` 与版本锁定 `1.42.0` 的双端 OTel `gen_ai.*` 遥测（默认关闭原始 Prompt 采集）；
    - ✅ 落地 `V34__bitemporal_fact_and_staging.sql`、`GovernedFactService`、`GovernedFactController` 与 `knowledge/{raw,research,articles}` 编译型知识库账本及校验；
    - ✅ 落地 `V35__pg_rls_pilot.sql`、`PgRlsMybatisInterceptor` 与 `PgRlsIsolationTest`（真实 EmbeddedPostgres 8 表 RLS 纵深隔离证明）。
+
+---
+
+## 6. Data-Driven Ops Profile（数据自治领域包）
+
+`data-driven-ops-profile` 将自治控制环映射到既有 A0/P1–P9，不新增顶层原语：
+
+| 领域组件 | 原语槽位 | 落点 |
+|---|---|---|
+| `Target`（硬不变量 + 软目标） | P2 Context + P8 Verify | metadata：`md_semantic_object(object_type=TARGET)` |
+| `ActionType`（L0–L3 / 包络 / Dry-Run / 补偿） | P3 Logic + P7 Security | metadata：`md_semantic_object(object_type=ACTION_TYPE)` |
+| `FilterPreset` | P2 Context | metadata：`au_filter_preset` |
+| `TriggerSpec` / `FlowSpec IR` / `FlowCompiler` / `Arbiter` | P4 Flow + P8 Verify | control：`flow.ir/v1` / `au_trigger_def` / `au_flow_version` |
+| `DurableFlowEngine` / Activity / 锁与冷却 | P4 Flow + P5 Protocol | runtime：`au_flow_instance` / `au_entity_lock_cooldown` |
+| `DecisionTrace` / `ShadowEvaluator` / Kill Switch | P9 Observe + P7 Security | governance：`au_decision_trace` |
+| 归因建议 / IR 草案 | A0 Agent | agent-service：只读归因 + 经 FlowCompiler 校验的草案 |
+
+**Agent 硬边界**：Agent 只能生成 FlowSpec IR 草案或读取 DecisionTrace 做归因，不得直接触发副作用；所有执行必须经过 `FlowCompiler → Arbiter → DurableFlowEngine`，L2/L3 审批复用 V32 宿主确认提案。

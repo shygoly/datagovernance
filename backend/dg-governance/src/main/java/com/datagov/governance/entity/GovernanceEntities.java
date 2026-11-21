@@ -301,9 +301,79 @@ public final class GovernanceEntities {
         private String sessionRef;
         private String maxSensitivity;
         private String contentDigest;
+        /** C8 可复现审计指纹 JSON（对齐 docs/analysis-report.md §10） */
+        private String reproducibilityFingerprint;
         private Instant generatedAt;
 
         private String createdBy;
         private Instant createdAt;
+    }
+
+    @Data
+    @TableName("gv_operational_report_def")
+    public static class OperationalReportDef {
+        @TableId(type = IdType.INPUT)
+        private String id;
+        private String workspaceId;
+        private String code;
+        private String name;
+        private String status;
+        private Integer latestVersion;
+        private String paramSchemaJson;
+        private String createdBy;
+        private Instant createdAt;
+        private Instant updatedAt;
+    }
+
+    @Data
+    @TableName("gv_operational_report_version")
+    public static class OperationalReportVersion {
+        @TableId(type = IdType.INPUT)
+        private String id;
+        private String reportId;
+        private String workspaceId;
+        private Integer version;
+        private Integer supersedesVersion;
+        private String blocksJson;
+        private String contentDigest;
+        private String createdBy;
+        private Instant createdAt;
+    }
+
+    @Data
+    @TableName("gv_operational_report_run")
+    public static class OperationalReportRun {
+        @TableId(type = IdType.INPUT)
+        private String id;
+        private String reportId;
+        private String workspaceId;
+        private Integer version;
+        private String status;
+        private String paramsJson;
+        private String reproducibilityFingerprint;
+        private String artifactMd;
+        private String artifactCsv;
+        private String errorMessage;
+        private String triggeredBy;
+        private Instant startedAt;
+        private Instant finishedAt;
+        private Instant createdAt;
+    }
+
+    @Data
+    @TableName("gv_operational_report_schedule")
+    public static class OperationalReportSchedule {
+        @TableId(type = IdType.INPUT)
+        private String id;
+        private String reportId;
+        private String workspaceId;
+        private String cronExpr;
+        private String recipientsJson;
+        private Boolean enabled;
+        private Boolean requireExportConfirm;
+        private Instant nextFireAt;
+        private Instant lastFireAt;
+        private Instant createdAt;
+        private Instant updatedAt;
     }
 }

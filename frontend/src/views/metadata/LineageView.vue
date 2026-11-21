@@ -4,27 +4,50 @@ import { ElMessage } from 'element-plus'
 import { useRoute, useRouter } from 'vue-router'
 import { catalogAssetApi } from '@/api/catalog-assets'
 import { lineageApi } from '@/api/lineage'
+import { useAuthStore } from '@/stores/auth'
 import type { CatalogColumn, CatalogDataset, CatalogSource } from '@/types/catalog-assets'
-import type { ImpactItem, LineageGraph, LineageLayoutNode, LineageNode } from '@/types/lineage'
+import type {
+  ImpactItem,
+  LineageEdge,
+  LineageGraph,
+  LineageLayoutNode,
+  LineageNode,
+  LineageOverview,
+} from '@/types/lineage'
+import { governanceLabel, governanceRoute, isGovernanceNode } from '@/utils/lineageFlow'
 import {
   buildImpactItems,
   buildLineageLayout,
+  filterLineageEdges,
   mergeLineageGraphs,
   parentDatasetOf,
 } from '@/utils/lineage'
+import { parseAggregatedDatasetEdge } from '@/utils/datasetEdge'
 import PageHeader from '@/components/common/PageHeader.vue'
 import FilterBar from '@/components/common/FilterBar.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
 import MetadataPanel from '@/components/insight/MetadataPanel.vue'
 import LineageGraphView from '@/components/lineage/LineageGraph.vue'
+import LineageFlowCanvas from '@/components/lineage/LineageFlowCanvas.vue'
+import LineageOverviewPanel from '@/components/lineage/LineageOverviewPanel.vue'
+import LineageEdgeInspector from '@/components/lineage/LineageEdgeInspector.vue'
+import LineageJobDiffDrawer from '@/components/lineage/LineageJobDiffDrawer.vue'
+import ManualLineageDialog from '@/components/lineage/ManualLineageDialog.vue'
+import SqlLineageImportDialog from '@/components/lineage/SqlLineageImportDialog.vue'
 
 type LineageDirection = 'upstream' | 'downstream' | 'both'
 type LineageMode = 'column' | 'dataset'
+/** 字段级画布形态：表卡片+端口（默认）/ 节点图（ECharts，保留作大图概览）。 */
+type ColumnView = 'flow' | 'graph'
 
 const route = useRoute()
 const router = useRouter()
+const auth = useAuthStore()
+
+const canManage = computed(() => auth.hasPermission('metadata:lineage:manage'))
 
 const mode = ref<LineageMode>(parseMode(route.query.mode))
+const columnView = ref<ColumnView>('flow')
 const direction = ref<LineageDirection>(parseDirection(route.query.direction))
 const depth = ref(parseDepth(route.query.depth))
 const datasetId = ref('')
@@ -49,6 +72,30 @@ const impactLoading = ref(false)
 const impactError = ref('')
 const impactItems = ref<ImpactItem[]>([])
 
+const overview = ref<LineageOverview | null>(null)
+const overviewLoading = ref(false)
+const overviewError = ref('')
+
+/** 是否包含 PLANNED 预估边；默认只看已确认血缘。 */
+const includePlanned = ref(false)
+/** 是否并入下游治理消费方（指标 / 分析报告 / 质检规则）；仅影响下游方向，默认关闭。 */
+const includeGovernance = ref(false)
+
+/** 作业历史变更对比抽屉（ACTIVE vs 最近一批 SUPERSEDED）。 */
+const diffVisible = ref(false)
+const diffJobId = ref('')
+const diffJobName = ref('')
+const selectedEdgeId = ref('')
+const edgeDetail = ref<LineageEdge | null>(null)
+const edgeLoading = ref(false)
+/** 表级聚合边展开的列级明细。 */
+const columnBreakdown = ref<LineageGraph | null>(null)
+const columnBreakdownLoading = ref(false)
+let edgeSequence = 0
+
+const manualDialog = ref<InstanceType<typeof ManualLineageDialog>>()
+const sqlImportDialog = ref<InstanceType<typeof SqlLineageImportDialog>>()
+
 let datasetSearchTimer: ReturnType<typeof setTimeout> | null = null
 let searchSequence = 0
 let lastSyncedRouteKey = ''
@@ -61,6 +108,64 @@ const directionLabelMap: Record<LineageDirection, string> = {
 }
 
 const isDatasetMode = computed(() => mode.value === 'dataset')
+/** 字段级用 Vue Flow 表卡片画布；表级聚合仍是 ECharts 节点图。 */
+const useFlowCanvas = computed(() => !isDatasetMode.value && columnView.value === 'flow')
+const restrictedCount = computed(() => graph.value.restrictedCount ?? 0)
+
+/** 当前字段无边，但同表其它字段有边（概览 columnEdgeCounts）。 */
+const datasetHasOtherLinedColumns = computed(() => {
+  if (isDatasetMode.value || !columnId.value) {
+    return false
+  }
+  const counts = overview.value?.columnEdgeCounts
+  if (!counts) {
+    return false
+  }
+  const current = counts[columnId.value]
+  const currentEmpty =
+    !current || (current.upstreamEdges === 0 && current.downstreamEdges === 0)
+  if (!currentEmpty) {
+    return false
+  }
+  return columns.value.some((column) => {
+    if (column.id === columnId.value) {
+      return false
+    }
+    const n = counts[column.id]
+    return !!n && (n.upstreamEdges > 0 || n.downstreamEdges > 0)
+  })
+})
+
+/** 未选中任何数据集（且不在加载中）时展示概览态。 */
+const showOverview = computed(
+  () => !datasetId.value && !datasetLoading.value && !graphLoading.value,
+)
+const datasetLineageCounts = computed(() => {
+  const map = new Map<string, { upstream: number; downstream: number }>()
+  for (const item of overview.value?.recentDatasets ?? []) {
+    map.set(item.datasetId, { upstream: item.upstreamEdges, downstream: item.downstreamEdges })
+  }
+  return map
+})
+const plannedEdgeCount = computed(
+  () => graph.value.edges.filter((edge) => (edge.status || '').toUpperCase() === 'PLANNED').length,
+)
+const selectedEdge = computed<LineageEdge | null>(() => {
+  if (!selectedEdgeId.value) {
+    return null
+  }
+  const base = graph.value.edges.find((edge) => edge.id === selectedEdgeId.value) || null
+  if (!base) {
+    return null
+  }
+  return edgeDetail.value?.id === base.id ? { ...base, ...edgeDetail.value } : base
+})
+const selectedEdgeFrom = computed(
+  () => graph.value.nodes.find((node) => node.id === selectedEdge.value?.fromNodeId) || null,
+)
+const selectedEdgeTo = computed(
+  () => graph.value.nodes.find((node) => node.id === selectedEdge.value?.toNodeId) || null,
+)
 const directionLabel = computed(() => directionLabelMap[direction.value])
 const datasetLabel = computed(() => dataset.value?.qualifiedName || '')
 const selectedColumn = computed(() =>
@@ -223,7 +328,7 @@ function parseDepth(value: unknown): number {
 }
 
 function nodeTypeSort(type: string): number {
-  const order = ['COLUMN', 'TABLE', 'DATASET']
+  const order = ['COLUMN', 'TABLE', 'DATASET', 'METRIC', 'REPORT', 'QUALITY_RULE']
   const index = order.indexOf(type)
   return index === -1 ? order.length : index
 }
@@ -236,6 +341,12 @@ function nodeTypeLabel(type: string): string {
       return '表'
     case 'DATASET':
       return '数据集'
+    case 'RESTRICTED':
+      return '受限资产'
+    case 'METRIC':
+    case 'REPORT':
+    case 'QUALITY_RULE':
+      return governanceLabel(type)
     default:
       return type || '-'
   }
@@ -249,6 +360,10 @@ function nodeTypeTag(type: string): 'primary' | 'success' | 'warning' | 'info' {
       return 'success'
     case 'DATASET':
       return 'warning'
+    case 'METRIC':
+    case 'REPORT':
+    case 'QUALITY_RULE':
+      return 'success'
     default:
       return 'info'
   }
@@ -365,11 +480,16 @@ async function loadDatasetGraph() {
   impactVisible.value = false
   impactItems.value = []
   try {
-    graph.value = await lineageApi.datasetGraph(datasetId.value, direction.value, depth.value)
+    const raw = await lineageApi.datasetGraph(datasetId.value, direction.value, depth.value, {
+      includePlanned: includePlanned.value,
+      includeGovernance: includeGovernance.value,
+    })
     const root =
-      graph.value.nodes.find((node) => node.catalogDatasetId === datasetId.value) ||
-      graph.value.nodes.find((node) => node.id === datasetId.value) ||
+      raw.nodes.find((node) => node.catalogDatasetId === datasetId.value) ||
+      raw.nodes.find((node) => node.id === datasetId.value) ||
       null
+    graph.value = filterLineageEdges(raw, { includePlanned: includePlanned.value }, root?.id)
+    clearEdgeSelection()
     rootNodeId.value = root?.id || ''
     selectedNodeId.value = root?.id || graph.value.nodes[0]?.id || ''
     nodeTypes.value = []
@@ -404,19 +524,25 @@ async function loadGraph() {
   impactVisible.value = false
   impactItems.value = []
   try {
+    const query = {
+      includePlanned: includePlanned.value,
+      includeGovernance: includeGovernance.value,
+    }
     const requests: Promise<LineageGraph>[] = []
     if (direction.value === 'both' || direction.value === 'upstream') {
-      requests.push(lineageApi.upstream(columnId.value, depth.value))
+      requests.push(lineageApi.upstream(columnId.value, depth.value, query))
     }
     if (direction.value === 'both' || direction.value === 'downstream') {
-      requests.push(lineageApi.downstream(columnId.value, depth.value))
+      requests.push(lineageApi.downstream(columnId.value, depth.value, query))
     }
     const results = await Promise.all(requests)
-    graph.value = mergeLineageGraphs(results)
+    const raw = mergeLineageGraphs(results)
     const root =
-      graph.value.nodes.find((node) => node.catalogColumnId === columnId.value) ||
-      graph.value.nodes.find((node) => node.id === columnId.value) ||
+      raw.nodes.find((node) => node.catalogColumnId === columnId.value) ||
+      raw.nodes.find((node) => node.id === columnId.value) ||
       null
+    graph.value = filterLineageEdges(raw, { includePlanned: includePlanned.value }, root?.id)
+    clearEdgeSelection()
     rootNodeId.value = root?.id || ''
     selectedNodeId.value = root?.id || graph.value.nodes[0]?.id || ''
     expanded.value = false
@@ -436,6 +562,30 @@ async function loadGraph() {
   }
 }
 
+/**
+ * 字段模式下默认选中「有血缘边」的字段，避免落到无边的首列（如 cohort_code）
+ * 导致列表显示 N 条上游、点进去却空白。
+ */
+function pickDefaultColumnId(
+  cols: { id: string }[],
+  requestedColumnId?: string,
+): string {
+  if (requestedColumnId && cols.some((column) => column.id === requestedColumnId)) {
+    return requestedColumnId
+  }
+  const counts = overview.value?.columnEdgeCounts
+  if (counts) {
+    const withEdges = cols.find((column) => {
+      const n = counts[column.id]
+      return !!n && (n.upstreamEdges > 0 || n.downstreamEdges > 0)
+    })
+    if (withEdges) {
+      return withEdges.id
+    }
+  }
+  return cols[0]?.id || ''
+}
+
 async function loadDatasetById(id: string, requestedColumnId?: string) {
   datasetLoading.value = true
   datasetId.value = id
@@ -444,10 +594,7 @@ async function loadDatasetById(id: string, requestedColumnId?: string) {
     dataset.value = detail.dataset
     registerDataset(detail.dataset)
     columns.value = detail.columns
-    const requested = requestedColumnId
-      ? detail.columns.find((column) => column.id === requestedColumnId)
-      : undefined
-    columnId.value = requested?.id || detail.columns[0]?.id || ''
+    columnId.value = pickDefaultColumnId(detail.columns, requestedColumnId)
     await loadGraph()
   } catch {
     datasetId.value = ''
@@ -575,7 +722,203 @@ function onNodeTypeChange() {
 }
 
 function selectNode(id: string) {
+  clearEdgeSelection()
   selectedNodeId.value = id
+}
+
+function clearEdgeSelection() {
+  edgeSequence += 1
+  selectedEdgeId.value = ''
+  edgeDetail.value = null
+  edgeLoading.value = false
+  columnBreakdown.value = null
+  columnBreakdownLoading.value = false
+}
+
+/** 受限边没有独立详情（ID 已哈希化）；表级聚合边走列级展开接口。 */
+function hasEdgeDetail(id: string): boolean {
+  return !id.startsWith('restricted-edge:') && !id.startsWith('dsedge:')
+}
+
+async function loadColumnBreakdown(edgeId: string, sequence: number) {
+  const parsed = parseAggregatedDatasetEdge(edgeId)
+  if (!parsed) {
+    columnBreakdown.value = null
+    columnBreakdownLoading.value = false
+    return
+  }
+  columnBreakdownLoading.value = true
+  columnBreakdown.value = null
+  try {
+    const detail = await lineageApi.columnEdgesBetween(
+      parsed.fromDatasetId,
+      parsed.toDatasetId,
+      { includePlanned: includePlanned.value },
+    )
+    if (sequence === edgeSequence) {
+      columnBreakdown.value = detail
+    }
+  } catch {
+    if (sequence === edgeSequence) {
+      columnBreakdown.value = { nodes: [], edges: [] }
+    }
+  } finally {
+    if (sequence === edgeSequence) {
+      columnBreakdownLoading.value = false
+    }
+  }
+}
+
+async function selectEdge(id: string) {
+  const sequence = ++edgeSequence
+  selectedEdgeId.value = id
+  edgeDetail.value = null
+  columnBreakdown.value = null
+  if (id.startsWith('dsedge:')) {
+    edgeLoading.value = false
+    await loadColumnBreakdown(id, sequence)
+    return
+  }
+  if (!hasEdgeDetail(id)) {
+    edgeLoading.value = false
+    return
+  }
+  edgeLoading.value = true
+  try {
+    // 图里的边已带基础字段；详情接口补齐作业与执行证据。失败时保留图内数据。
+    const detail = await lineageApi.edge(id)
+    if (sequence === edgeSequence) {
+      edgeDetail.value = detail
+    }
+  } catch {
+    // 拦截器已提示错误，图内字段仍可展示。
+  } finally {
+    if (sequence === edgeSequence) {
+      edgeLoading.value = false
+    }
+  }
+}
+
+/** 从聚合明细点进某条列级边：切到字段模式并以目标字段为中心。 */
+async function openColumnEdgeFromBreakdown(payload: {
+  edge: LineageEdge
+  fromNode?: LineageNode | null
+  toNode?: LineageNode | null
+}) {
+  const target =
+    payload.toNode?.catalogDatasetId === datasetId.value
+      ? payload.toNode
+      : payload.fromNode?.catalogDatasetId === datasetId.value
+        ? payload.fromNode
+        : payload.toNode || payload.fromNode
+  if (!target?.catalogDatasetId || !target.catalogColumnId) {
+    ElMessage.warning('该列级边缺少目录字段引用，无法定位')
+    return
+  }
+  mode.value = 'column'
+  await focusField(target.catalogDatasetId, target.catalogColumnId)
+  syncRoute()
+}
+
+/** 画布里双击字段 / 点击展开出的其余字段：以它为中心重新加载（按跳数懒加载展开）。 */
+async function centerField(payload: { datasetId: string; columnId: string }) {
+  await focusField(payload.datasetId, payload.columnId)
+  syncRoute()
+}
+
+function focusEdgeNode(nodeId: string) {
+  clearEdgeSelection()
+  selectedNodeId.value = nodeId
+}
+
+async function onIncludePlannedChange() {
+  expanded.value = false
+  await loadGraph()
+}
+
+async function onIncludeGovernanceChange() {
+  expanded.value = false
+  await loadGraph()
+}
+
+function openDiff(payload: { jobId: string; jobName?: string | null }) {
+  diffJobId.value = payload.jobId
+  diffJobName.value = payload.jobName || ''
+  diffVisible.value = true
+}
+
+/** 治理消费方卡片 / 清单行的跳转：指标 → 语义本体，质检规则 → 资产质量；分析报告暂无页面。 */
+function openGovernance(payload: { refType: string; refId: string; datasetId?: string | null }) {
+  const target = governanceRoute(payload.refType, payload.refId, payload.datasetId)
+  if (!target) {
+    ElMessage.info(`${governanceLabel(payload.refType)}暂无独立页面可跳转`)
+    return
+  }
+  void router.push({ path: target.path, query: target.query })
+}
+
+async function loadOverview() {
+  overviewLoading.value = true
+  overviewError.value = ''
+  try {
+    overview.value = await lineageApi.overview()
+  } catch {
+    overviewError.value = '血缘概览加载失败，请稍后重试'
+  } finally {
+    overviewLoading.value = false
+  }
+}
+
+/**
+ * 概览列表点进数据集：进入表级，并自动选中指向本表的第一条上游聚合边，
+ * 右侧展开其列级明细（例如 labevents → v_lab_std 的 8 条）。
+ */
+async function pickOverviewDataset(id: string) {
+  mode.value = 'dataset'
+  await onDatasetChange(id)
+  await selectPrimaryUpstreamAggregatedEdge()
+}
+
+/** 选中「邻居 → 当前表」的聚合边（优先上游），方便直接看到列级明细。 */
+async function selectPrimaryUpstreamAggregatedEdge() {
+  if (!isDatasetMode.value || !datasetId.value) {
+    return
+  }
+  const inbound = graph.value.edges.find(
+    (edge) => edge.id.startsWith('dsedge:') && edge.toNodeId === datasetId.value,
+  )
+  const outbound = graph.value.edges.find(
+    (edge) => edge.id.startsWith('dsedge:') && edge.fromNodeId === datasetId.value,
+  )
+  const target = inbound || outbound
+  if (target) {
+    await selectEdge(target.id)
+  }
+}
+
+function openManualDialog() {
+  manualDialog.value?.open()
+}
+
+function openSqlImportDialog() {
+  sqlImportDialog.value?.open()
+}
+
+/** 补录/导入成功后刷新概览（徽标与 KPI）与当前图。 */
+async function onLineageChanged() {
+  await loadOverview()
+  if (datasetId.value && (isDatasetMode.value || columnId.value)) {
+    await loadGraph()
+  }
+}
+
+function lineageBadge(counts?: { upstream: number; downstream: number }): string {
+  return counts ? `↑${counts.upstream} ↓${counts.downstream}` : ''
+}
+
+function columnLineageBadge(id: string): string {
+  const counts = overview.value?.columnEdgeCounts?.[id]
+  return counts ? `↑${counts.upstreamEdges} ↓${counts.downstreamEdges}` : ''
 }
 
 function openSelectedAsset() {
@@ -641,8 +984,8 @@ async function loadImpact() {
   impactError.value = ''
   try {
     const result = isDatasetMode.value
-      ? await lineageApi.datasetGraph(datasetId.value, 'downstream', 5)
-      : await lineageApi.impact(columnId.value, 5)
+      ? await lineageApi.datasetGraph(datasetId.value, 'downstream', 5, { includeGovernance: true })
+      : await lineageApi.impact(columnId.value, 5, { includeGovernance: true })
     const root = isDatasetMode.value
       ? result.nodes.find((node) => node.catalogDatasetId === datasetId.value) ||
         result.nodes.find((node) => node.id === rootNodeId.value) ||
@@ -842,6 +1185,12 @@ async function applyRouteState() {
   await searchDatasets('')
 }
 
+watch(showOverview, (visible, previous) => {
+  if (visible && !previous) {
+    void loadOverview()
+  }
+})
+
 watch(routeKey, async () => {
   if (routeKey.value === lastSyncedRouteKey) {
     return
@@ -854,6 +1203,8 @@ watch(routeKey, async () => {
 })
 
 onMounted(async () => {
+  // 概览同时服务于概览态与下拉徽标，和资产加载并行，失败不阻塞血缘图。
+  void loadOverview()
   await loadSources()
   await applyRouteState()
   syncRoute()
@@ -870,6 +1221,8 @@ onBeforeUnmount(() => {
   <div class="page-container lineage-workspace">
     <PageHeader :title="modeTitle()" :description="modeDescription()">
       <template #actions>
+        <el-button v-if="canManage" @click="openManualDialog">手工补录血缘</el-button>
+        <el-button v-if="canManage" @click="openSqlImportDialog">SQL 解析导入</el-button>
         <el-button @click="copyLink">复制链接</el-button>
         <el-button
           :disabled="!datasetId || (!isDatasetMode && !columnId)"
@@ -910,7 +1263,18 @@ onBeforeUnmount(() => {
               :value="item.id"
             >
               <div class="dataset-option">
-                <span>{{ item.name }}</span>
+                <span class="dataset-option__title">
+                  <span>{{ item.name }}</span>
+                  <el-tag
+                    v-if="datasetLineageCounts.get(item.id)"
+                    size="small"
+                    type="info"
+                    effect="plain"
+                    class="lineage-badge"
+                  >
+                    {{ lineageBadge(datasetLineageCounts.get(item.id)) }}
+                  </el-tag>
+                </span>
                 <span class="dataset-option__meta">
                   {{ item.qualifiedName }} · {{ item.columnCount ?? '-' }} 字段
                 </span>
@@ -933,7 +1297,20 @@ onBeforeUnmount(() => {
               :key="column.id"
               :label="`${column.name} · ${column.rawType || column.canonicalType || '-'}`"
               :value="column.id"
-            />
+            >
+              <span class="column-option">
+                <span>{{ column.name }} · {{ column.rawType || column.canonicalType || '-' }}</span>
+                <el-tag
+                  v-if="columnLineageBadge(column.id)"
+                  size="small"
+                  type="info"
+                  effect="plain"
+                  class="lineage-badge"
+                >
+                  {{ columnLineageBadge(column.id) }}
+                </el-tag>
+              </span>
+            </el-option>
           </el-select>
         </div>
 
@@ -1029,7 +1406,17 @@ onBeforeUnmount(() => {
       </template>
     </el-alert>
 
-    <div class="lineage-main">
+    <LineageOverviewPanel
+      v-if="showOverview"
+      :overview="overview"
+      :loading="overviewLoading"
+      :error="overviewError"
+      @pick-dataset="pickOverviewDataset"
+      @view-job-diff="openDiff"
+      @refresh="loadOverview"
+    />
+
+    <div v-if="!showOverview" class="lineage-main">
       <el-card shadow="never" class="lineage-chart-card">
         <template #header>
           <div class="panel-head">
@@ -1046,6 +1433,39 @@ onBeforeUnmount(() => {
                 中心：{{ centerLabel }}
               </span>
             </div>
+            <div class="panel-head__actions">
+              <el-radio-group
+                v-if="!isDatasetMode"
+                v-model="columnView"
+                size="small"
+                aria-label="字段血缘画布形态"
+              >
+                <el-radio-button value="flow">表卡片</el-radio-button>
+                <el-radio-button value="graph">节点图</el-radio-button>
+              </el-radio-group>
+              <el-switch
+                v-model="includePlanned"
+                size="small"
+                inline-prompt
+                active-text="含预估"
+                inactive-text="仅确认"
+                @change="onIncludePlannedChange"
+              />
+              <el-switch
+                v-model="includeGovernance"
+                size="small"
+                inline-prompt
+                active-text="含治理"
+                inactive-text="仅血缘"
+                aria-label="包含下游治理消费方"
+                @change="onIncludeGovernanceChange"
+              />
+              <span class="panel-head__hint">
+                {{ includePlanned
+                  ? `包含 PLANNED 预估边（虚线）${plannedEdgeCount ? `，当前 ${plannedEdgeCount} 条` : ''}`
+                  : '仅显示已确认血缘' }}
+              </span>
+            </div>
           </div>
         </template>
 
@@ -1056,6 +1476,15 @@ onBeforeUnmount(() => {
           :closable="false"
           class="lineage-attribution-alert"
           :title="`${graph.unattributedEdges} 条历史列级边缺少数据集归属，未计入表级视图`"
+        />
+
+        <el-alert
+          v-if="restrictedCount > 0"
+          type="warning"
+          show-icon
+          :closable="false"
+          class="lineage-attribution-alert"
+          :title="`当前图谱包含 ${restrictedCount} 个受权限限制的分支，已按最小权限原则截断`"
         />
 
         <div v-if="datasetLoading || graphLoading" v-loading="true" class="lineage-placeholder" />
@@ -1077,35 +1506,70 @@ onBeforeUnmount(() => {
           :description="isDatasetMode ? '该数据集暂无表级血缘' : '该字段暂无血缘'"
         >
           <span class="lineage-empty-hint">
-            血缘由 ETL / OpenLineage 作业上报后出现在这里
+            <template v-if="!isDatasetMode && datasetHasOtherLinedColumns">
+              当前字段没有上下游；同表其它字段有血缘，请在上方「字段」下拉里切换，或切到「表级血缘」查看整表汇总。
+            </template>
+            <template v-else>
+              血缘由 ETL / OpenLineage 作业上报后出现在这里
+            </template>
           </span>
         </EmptyState>
         <EmptyState
           v-else-if="!visibleLayout.length"
           description="当前节点类型过滤下没有可展示的节点"
         />
+        <LineageFlowCanvas
+          v-else-if="useFlowCanvas"
+          :layout="visibleLayout"
+          :edges="visibleEdges"
+          :root-id="rootNodeId"
+          :selected-id="selectedNodeId"
+          :selected-edge-id="selectedEdgeId"
+          :height="graphHeight"
+          @select="selectNode"
+          @select-edge="selectEdge"
+          @center-field="centerField"
+          @open-governance="openGovernance"
+        />
         <LineageGraphView
           v-else
           :layout="visibleLayout"
           :edges="visibleEdges"
           :selected-id="selectedNodeId"
+          :selected-edge-id="selectedEdgeId"
           :height="graphHeight"
           :show-edge-labels="isDatasetMode"
           @select="selectNode"
+          @select-edge="selectEdge"
         />
       </el-card>
 
       <el-card shadow="never" class="lineage-side-card">
         <template #header>
           <div class="panel-head">
-            <span class="panel-head__title">节点详情</span>
-            <span v-if="selectedNode" class="panel-head__hint">
+            <span class="panel-head__title">{{ selectedEdge ? '连线详情' : '节点详情' }}</span>
+            <el-button v-if="selectedEdge" link type="primary" @click="clearEdgeSelection">
+              返回节点
+            </el-button>
+            <span v-else-if="selectedNode" class="panel-head__hint">
               {{ selectedLevelText() }}
             </span>
           </div>
         </template>
 
-        <template v-if="selectedNode">
+        <LineageEdgeInspector
+          v-if="selectedEdge"
+          :edge="selectedEdge"
+          :from-node="selectedEdgeFrom"
+          :to-node="selectedEdgeTo"
+          :loading="edgeLoading"
+          :column-breakdown="columnBreakdown"
+          :column-breakdown-loading="columnBreakdownLoading"
+          @focus-node="focusEdgeNode"
+          @view-job-diff="openDiff"
+          @open-column-edge="openColumnEdgeFromBreakdown"
+        />
+        <template v-else-if="selectedNode">
           <div class="node-summary">
             <div class="node-summary__name">
               {{ selectedNode.displayName || selectedNode.qualifiedName }}
@@ -1118,6 +1582,19 @@ onBeforeUnmount(() => {
           </div>
           <MetadataPanel :items="selectedMetaItems" />
           <div class="node-actions">
+            <el-button
+              v-if="isGovernanceNode(selectedNode)"
+              type="success"
+              plain
+              :disabled="!governanceRoute(selectedNode.externalRefType || selectedNode.nodeType, selectedNode.externalRefId, selectedNode.catalogDatasetId)"
+              @click="openGovernance({
+                refType: selectedNode.externalRefType || selectedNode.nodeType,
+                refId: selectedNode.externalRefId || '',
+                datasetId: selectedNode.catalogDatasetId,
+              })"
+            >
+              跳转到{{ governanceLabel(selectedNode.externalRefType || selectedNode.nodeType) }}
+            </el-button>
             <el-button
               type="primary"
               plain
@@ -1139,11 +1616,11 @@ onBeforeUnmount(() => {
             <el-button link @click="copyQualifiedName">复制限定名</el-button>
           </div>
         </template>
-        <EmptyState v-else description="点击图中节点查看详情" />
+        <EmptyState v-else description="点击图中节点或连线查看详情" />
       </el-card>
     </div>
 
-    <el-card shadow="never" class="lineage-impact-card">
+    <el-card v-if="!showOverview" shadow="never" class="lineage-impact-card">
       <template #header>
         <div class="panel-head">
           <div class="panel-head__meta">
@@ -1222,6 +1699,20 @@ onBeforeUnmount(() => {
           <el-table-column label="操作" width="110" fixed="right">
             <template #default="{ row }">
               <el-button
+                v-if="isGovernanceNode(row)"
+                link
+                type="success"
+                :disabled="!governanceRoute(row.externalRefType || row.nodeType, row.externalRefId, row.catalogDatasetId)"
+                @click="openGovernance({
+                  refType: row.externalRefType || row.nodeType,
+                  refId: row.externalRefId || '',
+                  datasetId: row.catalogDatasetId,
+                })"
+              >
+                跳转
+              </el-button>
+              <el-button
+                v-else
                 link
                 type="primary"
                 :disabled="isDatasetMode ? !row.catalogDatasetId : (!row.catalogColumnId || !row.catalogDatasetId)"
@@ -1238,6 +1729,10 @@ onBeforeUnmount(() => {
         />
       </template>
     </el-card>
+
+    <LineageJobDiffDrawer v-model="diffVisible" :job-id="diffJobId" :job-name="diffJobName" />
+    <ManualLineageDialog v-if="canManage" ref="manualDialog" @saved="onLineageChanged" />
+    <SqlLineageImportDialog v-if="canManage" ref="sqlImportDialog" @imported="onLineageChanged" />
   </div>
 </template>
 
@@ -1283,6 +1778,19 @@ onBeforeUnmount(() => {
 .dataset-option__meta {
   font-size: 11px;
   color: var(--dg-text-muted);
+}
+
+.dataset-option__title,
+.column-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--dg-space-sm);
+}
+
+.lineage-badge {
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
 }
 
 .lineage-meta {

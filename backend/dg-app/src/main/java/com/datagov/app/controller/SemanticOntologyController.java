@@ -32,6 +32,16 @@ import com.datagov.metadata.service.SemanticOntologyService.SubgraphSearchReques
 import com.datagov.metadata.service.SemanticOntologyService.ValueDictRequest;
 import com.datagov.metadata.service.SemanticOntologyService.ValueDictView;
 import com.datagov.metadata.service.SemanticOntologyService.VersionView;
+import com.datagov.metadata.service.metric6d.MetricStatisticalFalsifier.TableBinding;
+import com.datagov.metadata.service.metric6d.MetricVerificationExecutor;
+import com.datagov.metadata.service.metric6d.MetricVerificationExecutor.FalsifyRequest;
+import com.datagov.metadata.service.metric6d.MetricVerificationExecutor.FalsifyRunResult;
+import com.datagov.metadata.service.metric6d.MetricVerificationExecutor.ProbePlanResult;
+import com.datagov.metadata.service.metric6d.SemanticMetric6dService;
+import com.datagov.metadata.service.metric6d.SemanticMetric6dService.DeleteImpact;
+import com.datagov.metadata.service.metric6d.SemanticMetric6dService.ImportResult;
+import com.datagov.metadata.service.metric6d.SemanticMetric6dService.VerifyResult;
+import com.datagov.metadata.service.metric6d.SemanticYamlCodec.ResolveResult;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -59,15 +69,21 @@ public class SemanticOntologyController {
     private final SemanticWarehouseService warehouseService;
     private final MultiWarehouseQueryCompiler multiWarehouseCompiler;
     private final InsightProperties insightProperties;
+    private final SemanticMetric6dService metric6dService;
+    private final MetricVerificationExecutor verificationExecutor;
 
     public SemanticOntologyController(SemanticOntologyService semanticService,
                                       SemanticWarehouseService warehouseService,
                                       MultiWarehouseQueryCompiler multiWarehouseCompiler,
-                                      InsightProperties insightProperties) {
+                                      InsightProperties insightProperties,
+                                      SemanticMetric6dService metric6dService,
+                                      MetricVerificationExecutor verificationExecutor) {
         this.semanticService = semanticService;
         this.warehouseService = warehouseService;
         this.multiWarehouseCompiler = multiWarehouseCompiler;
         this.insightProperties = insightProperties;
+        this.metric6dService = metric6dService;
+        this.verificationExecutor = verificationExecutor;
     }
 
     public record RollbackRequest(int versionNo) {
@@ -389,5 +405,80 @@ public class SemanticOntologyController {
                 "combineModes", SemanticWarehouseService.COMBINE_MODES,
                 "federationEngines", SemanticWarehouseService.FEDERATION_ENGINES,
                 "tableRoles", SemanticWarehouseService.TABLE_ROLES));
+    }
+
+    @PostMapping("/yaml/import")
+    @RequirePermission("metadata:semantic:write")
+    @Operation(summary = "YAML/JSON 导入预览（短名解析 + G1；不落库）")
+    public ApiResponse<ImportResult> importYaml(@RequestBody Map<String, String> body) {
+        return ApiResponse.ok(metric6dService.previewImport(body == null ? null : body.get("content")));
+    }
+
+    @GetMapping("/yaml/export")
+    @RequirePermission("metadata:semantic:read")
+    @Operation(summary = "YAML 双模式导出（short|full）")
+    public ApiResponse<Map<String, String>> exportYaml(@RequestParam(defaultValue = "short") String mode) {
+        return ApiResponse.ok(Map.of("mode", mode, "yaml", metric6dService.exportYaml(mode)));
+    }
+
+    @PostMapping("/objects/{id}/verify")
+    @RequirePermission("metadata:semantic:write")
+    @Operation(summary = "触发 G1 验证并回写 verified_json")
+    public ApiResponse<VerifyResult> verifyObject(@PathVariable String id) {
+        return ApiResponse.ok(metric6dService.verifyObject(id));
+    }
+
+    @PostMapping("/objects/{id}/falsify")
+    @RequirePermission("metadata:semantic:write")
+    @Operation(summary = "③b：经 DataAccessGateway 执行统计证伪并回写 verified_json / LOW_CONFIDENCE")
+    public ApiResponse<FalsifyRunResult> falsifyObject(
+            @PathVariable String id,
+            @RequestBody FalsifyBody body) {
+        TableBinding parent = new TableBinding(body.parentTable(), body.parentPk(), body.parentPk());
+        TableBinding child = new TableBinding(body.childTable(), body.childPk(), body.childFk());
+        return ApiResponse.ok(verificationExecutor.runFalsification(id, new FalsifyRequest(
+                body.dataSourceId(), parent, child, body.fkMatchThreshold())));
+    }
+
+    @PostMapping("/objects/{id}/plan-probes")
+    @RequirePermission("metadata:semantic:write")
+    @Operation(summary = "③c：生成 6 类探针 SMQ 计划并写入 verified_json")
+    public ApiResponse<ProbePlanResult> planProbes(
+            @PathVariable String id,
+            @RequestParam(required = false) String metricCode,
+            @RequestParam(required = false) String dimensionCode) {
+        return ApiResponse.ok(verificationExecutor.planProbes(id, metricCode, dimensionCode));
+    }
+
+    public record FalsifyBody(
+            String dataSourceId,
+            String parentTable,
+            String parentPk,
+            String childTable,
+            String childPk,
+            String childFk,
+            Double fkMatchThreshold
+    ) {
+    }
+
+    @PostMapping("/objects/{id}/propagate-stale")
+    @RequirePermission("metadata:semantic:write")
+    @Operation(summary = "G5：按 content_digest 变更传播 STALE_REVIEW 并持久化")
+    public ApiResponse<List<String>> propagateStale(@PathVariable String id) {
+        return ApiResponse.ok(metric6dService.persistStaleReview(id));
+    }
+
+    @GetMapping("/objects/{id}/delete-impact")
+    @RequirePermission("metadata:semantic:read")
+    @Operation(summary = "删除保护：列出活跃引用方")
+    public ApiResponse<DeleteImpact> deleteImpact(@PathVariable String id) {
+        return ApiResponse.ok(metric6dService.deleteImpact(id));
+    }
+
+    @GetMapping("/resolve-ref")
+    @RequirePermission("metadata:semantic:read")
+    @Operation(summary = "短名解析：RESOLVED / UNRESOLVED_REF / AMBIGUOUS_REF")
+    public ApiResponse<ResolveResult> resolveRef(@RequestParam String shortName) {
+        return ApiResponse.ok(metric6dService.resolveRef(shortName));
     }
 }

@@ -38,8 +38,20 @@ space:
     - SemanticMapping          # 逻辑对象 <-> 多仓物理表列异构映射(含值归一化 JSON 与单位换算)
     - SemanticLink             # STRUCTURAL (Join/依赖/类型化引用边 dimension_ref|metric_ref|column_ref + target_content_hash) + SEMANTIC/CAUSAL 知识图谱边
     - SemanticObjectVersion    # 双时间态不可变发布快照 + SHA-256 content_digest(驱动 G5 STALE_REVIEW)
+    # 数据自治 Layer 3 静态声明契约(data-driven-ops-profile)
+    - Target                   # object_type=TARGET: 硬不变量 invariants + 软目标 objectives
+    - ActionType               # object_type=ACTION_TYPE: L0–L3 授权/参数包络/Dry-Run/补偿契约/domainScope
+    - FilterPreset             # au_filter_preset: 命名可复用 SMQ Filter / Cohort / Quality Scope
     - SemanticValueDict        # L1/L2 安全维度值对齐字典(严禁 L3/L4)
-    - SemanticVerificationRecord # 度量四层验证闭环记录(G1-G5 静态图闸门 / 统计证伪 / 6 类探针 SMQ / 反模式检测)
+    - SemanticVerificationRecord # 度量四层验证闭环记录(G1-G5 静态图闸门 / 统计证伪 / 探针 SMQ / 反模式检测)
+    # 问数 IR、统一门禁与临床队列定义态（analysis-hardening / smq-constrained-compile）
+    - SemanticQuerySpec        # SMQ：结构化问数 IR（不含 SQL）；代码别名可保留
+    - CatalogGrammar           # ACL 裁剪后的可枚举目录约束投影
+    - SemanticGateContext      # 单仓/多仓/联邦共用门禁上下文（非持久化核心，契约对象）
+    - CompileReject            # 类型化编译拒绝（error_code/location/allowed/repair_hint）
+    - CohortSpec               # 队列定义：锚点、相对窗、纳入/排除（定义态）
+    - CriterionNode            # 可审校条件树节点（禁止内嵌裸 SQL）
+    - ClinicalOperatorRegistry # 确定性统计算子元数据与版本登记（执行在 Runtime）
     # 规则
     - Rule                     # 序号17 CLEANSING / TRANSFORM
     - RuleParam
@@ -69,6 +81,7 @@ space:
     DataSourceDef: [DRAFT, TESTING, AVAILABLE, UNREACHABLE, DISABLED, ARCHIVED]
     JobDefinition: [DRAFT, VALIDATED, PUBLISHED, SCHEDULING, PAUSED, OFFLINE, ARCHIVED]
     SemanticObject: [DRAFT, PROPOSED, STALE_REVIEW, PUBLISHED, DEPRECATED]
+    CohortSpec: [DRAFT, PROPOSED, PUBLISHED, DEPRECATED]
 
   commands:
     - RegisterDataSource
@@ -97,6 +110,11 @@ space:
     - OfflineDefinition
     - ImportSemanticYaml
     - RunMetricVerification
+    - PublishCohortSpec
+    - CompileAndValidateSmq          # 干跑：SMQ → SQL 或 CompileReject（不执行）
+    - PublishTarget                  # 发布 Layer 3 目标契约(校验绑定 ENTITY/METRIC)
+    - PublishActionType              # 发布 Layer 3 动作契约(校验包络与配对补偿)
+    - UpsertFilterPreset             # 命名过滤器预设
 
   queries:
     - GetDataSource
@@ -114,6 +132,11 @@ space:
     - ListSemanticMetrics
     - ResolveSemanticRef
     - CheckSemanticDeleteImpact
+    - GetCatalogGrammar              # 问数目录约束投影（按 userId+workspaceId ACL）
+    - GetCohortSpec
+    - GetTarget
+    - ListActionTypes
+    - ListFilterPresets
 
   events_produced:
     - DataSourceRegistered
@@ -142,6 +165,11 @@ space:
     - 被引用的维度/度量禁止删除(删除保护);被引用节点 content_digest 变更自动触发引用方 STALE_REVIEW(G5)
     - LLM 仅负责命名/描述/表达式初稿与候选建议,llm_inference 字段强制 requires_human_review=true,安全/租户列与 RLS 策略禁止 LLM 参与
     - 统计证伪、探针查询或反模式检测未通过的指标禁止自动生效(证伪 FAIL 字段降级 LOW_CONFIDENCE 入人工队列)
+    - 单仓/多仓/联邦编译必须共用 SemanticGate（允许维、时间窗、defaultFilters、EXCLUDES、数据 ACL、截断与审计字段）；禁止路径私有宽松模式
+    - SMQ 不得包含裸 SQL；CriterionNode / CohortSpec 禁止内嵌裸 SQL 字符串
+    - 临床评分与统计推断不得在 SemanticQueryCompiler 内以字符串模板实现；仅登记 ClinicalOperator 并由 Runtime 执行
+    - 未通过 G1-G5 / verified 门禁的度量不得进入生产 CatalogGrammar
+    - 问数成功/拒绝与队列/算子消费路径须绑定 reproducibility_fingerprint（对齐 docs/analysis-report.md §10）
 
   storage:
     primary: PostgreSQL(全表 workspace_id 行级隔离,ORM 强制注入过滤)
@@ -174,6 +202,8 @@ space:
     - 不得承担调度
     - 不得写入 Execution 事实
     - 不得替代 Workflow Compiler 做编译
+    - 不得在本 Space 实现生存分析/回归/PSM/临床评分等统计执行（仅登记算子元数据）
+    - 不得让多仓或联邦路径绕过 SemanticGate
 
   api_boundary: REST /api/v1/metadata/**
   consistency: 强一致(定义态必须强一致);从 runtime 回写的运行状态为最终一致

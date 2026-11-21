@@ -38,15 +38,25 @@ public final class CatalogModel {
     ) {
     }
 
-    /** 表或视图。 */
+    /**
+     * 表或视图。
+     *
+     * @param viewDefinition 视图 / 物化视图的定义 SQL;连接器取不到(或不是视图)时为 null。
+     *                       只供列级血缘解析使用(column-lineage-e2e P1-8),不代表一定完整可解析
+     */
     public record TableInfo(
             String name,
             TableKind kind,
             String comment,
             Long approximateRowCount,
             Long sizeInBytes,
-            Instant createdAt
+            Instant createdAt,
+            String viewDefinition
     ) {
+        public TableInfo(String name, TableKind kind, String comment, Long approximateRowCount,
+                         Long sizeInBytes, Instant createdAt) {
+            this(name, kind, comment, approximateRowCount, sizeInBytes, createdAt, null);
+        }
     }
 
     public enum TableKind {

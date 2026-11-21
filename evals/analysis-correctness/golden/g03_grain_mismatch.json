@@ -1,0 +1,7 @@
+{
+  "id": "g03_grain_mismatch",
+  "kind": "gate",
+  "metric_spec_json": "{\"allowedGrains\":[\"day\",\"month\"]}",
+  "grain": "week",
+  "expect_error": "GRAIN_MISMATCH"
+}

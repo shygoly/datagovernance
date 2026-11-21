@@ -46,7 +46,10 @@ public enum JobRefType {
     CONNECTIVITY_PROBE("连通性检查"),
 
     /** 序号 34:Intelligence 的训练/预标注任务 */
-    PYTHON_JOB("Python 任务");
+    PYTHON_JOB("Python 任务"),
+
+    /** 轻量级 ETL 管道（DuckDB 向量化内核 · lightweight-etl-pipeline） */
+    ETL_PIPELINE("ETL 管道");
 
     private final String displayName;
 

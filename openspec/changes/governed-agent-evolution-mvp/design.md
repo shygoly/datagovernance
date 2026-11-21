@@ -76,10 +76,10 @@ Browser (Vue 3 · AgentDock.vue)
 
 ## 4. 关键数据模型与接口增量设计（最小侵入）
 
-1. **数据库迁移预留（`V36__evolution_fingerprint_and_profile.sql`）**：
-   - `gv_analysis_report_version` 新增选填列 `reproducibility_fingerprint TEXT`（规范化 JSON，向后兼容 `V13`）；
-   - 新增 `md_dataset_profile_run`（记录数据集确定性剖析快照、异常模式摘要与 `pattern_fingerprint`）；
-   - 复用 `V34` `gv_governed_fact`（补充 `pattern_fingerprint` 与 `rejection_reason` 字段用于驳回防重提，不新造平行表）。
+1. **数据库迁移（`V40__reproducibility_fingerprint.sql` + `V44__governed_agent_evolution_mvp.sql`）**：
+   - `gv_analysis_report_version` 已于 `V40` 补齐 `reproducibility_fingerprint TEXT`（向后兼容 `V13`）；
+   - `V44` 新增 `md_dataset_profile_run`（记录数据集确定性剖析快照、五维异常摘要与 `pattern_fingerprint`，并启用 PostgreSQL RLS 策略）；
+   - `V44` 复用 `V34` `gv_governed_fact`（补充 `pattern_fingerprint` 与 `rejection_reason` 字段及联合索引用于驳回防重提，不新造平行表）。
 2. **模型路由护栏配置（`dg-app` + `agent-service/src/config.ts`）**：
    - 为模型端点显式标注 `endpointKind: SELF_HOSTED | EXTERNAL`；
    - 当请求关联数据集 `max_sensitivity ≥ L3` 或包含未脱敏明细时，服务端拒绝路由至 `EXTERNAL` 端点并返回结构化错误码，记入安全审计。

@@ -1,0 +1,1076 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Governed Precision — Semantic Ontology & 6D Metrics</title>
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Inter & JetBrains Mono Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'Roboto', 'sans-serif'],
+            mono: ['JetBrains Mono', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'Monaco', 'monospace'],
+          },
+          colors: {
+            gov: {
+              primary: '#2456B8',
+              primaryHover: '#1B4496',
+              primaryLight: '#EBF1FC',
+              border: '#E2E8F0',
+              borderSubtle: '#EDF2F7',
+              surface: '#FFFFFF',
+              canvas: '#F8FAFC',
+              sidebar: '#0F172A',
+              sidebarHover: '#1E293B',
+              textMain: '#0F172A',
+              textMuted: '#64748B',
+              textSubtle: '#94A3B8',
+            },
+            badge: {
+              blueBg: '#EFF6FF',
+              blueText: '#1D4ED8',
+              blueBorder: '#BFDBFE',
+              amberBg: '#FEF3C7',
+              amberText: '#B45309',
+              amberBorder: '#FDE68A',
+              emeraldBg: '#ECFDF5',
+              emeraldText: '#047857',
+              emeraldBorder: '#A7F3D0',
+              slateBg: '#F1F5F9',
+              slateText: '#475569',
+              slateBorder: '#CBD5E1',
+              roseBg: '#FFF1F2',
+              roseText: '#BE123C',
+              roseBorder: '#FECDD3',
+              purpleBg: '#FAF5FF',
+              purpleText: '#6B21A8',
+              purpleBorder: '#E9D5FF'
+            }
+          }
+        }
+      }
+    }
+  </script>
+
+  <style>
+    /* High density scrollbar */
+    ::-webkit-scrollbar {
+      width: 5px;
+      height: 5px;
+    }
+    ::-webkit-scrollbar-track {
+      background: #F8FAFC;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #CBD5E1;
+      border-radius: 3px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: #94A3B8;
+    }
+    .hairline-y {
+      border-right: 1px solid #E2E8F0;
+    }
+    .code-pill {
+      font-family: 'JetBrains Mono', monospace;
+      letter-spacing: -0.02em;
+    }
+  </style>
+</head>
+
+<body class="h-full bg-gov-canvas text-gov-textMain font-sans antialiased flex overflow-hidden text-[13px] selection:bg-gov-primaryLight selection:text-gov-primary">
+
+  <!-- ========================================================================= -->
+  <!-- 1. LEFT NAVIGATION RAIL (220px fixed, collapsible aesthetic) -->
+  <!-- ========================================================================= -->
+  <aside class="w-[220px] flex-shrink-0 bg-gov-sidebar text-slate-300 flex flex-col justify-between border-r border-slate-800 z-30 select-none">
+    <div class="flex flex-col h-full overflow-hidden">
+      <!-- Brand Header -->
+      <div class="h-14 flex items-center px-4 border-b border-slate-800/80 gap-2.5">
+        <div class="w-6 h-6 rounded bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center text-white shadow-sm ring-1 ring-white/20">
+          <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />
+            <polyline stroke-linecap="round" stroke-linejoin="round" points="3.27 6.96 12 12.01 20.73 6.96" />
+            <line stroke-linecap="round" stroke-linejoin="round" x1="12" y1="22.08" x2="12" y2="12" />
+          </svg>
+        </div>
+        <div class="flex flex-col">
+          <span class="font-semibold text-slate-100 text-[13px] tracking-tight leading-tight">DataGov Kernel</span>
+          <span class="text-[10px] text-slate-400 font-mono leading-tight">v3.4 · Enterprise</span>
+        </div>
+      </div>
+
+      <!-- Navigation Links Container -->
+      <nav class="flex-1 overflow-y-auto px-2.5 py-3 space-y-4">
+        <!-- Section: WORKBENCH -->
+        <div>
+          <div class="px-2 pb-1.5 text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Workbench</div>
+          <div class="space-y-0.5">
+            <a href="#" class="flex items-center gap-2.5 px-2.5 py-1.5 rounded text-slate-400 hover:text-slate-100 hover:bg-gov-sidebarHover text-[12.5px] transition-colors">
+              <svg class="w-4 h-4 stroke-[1.8]" fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"></rect><rect x="14" y="3" width="7" height="7" rx="1"></rect><rect x="14" y="14" width="7" height="7" rx="1"></rect><rect x="3" y="14" width="7" height="7" rx="1"></rect></svg>
+              <span>Overview</span>
+            </a>
+            <a href="#" class="flex items-center justify-between px-2.5 py-1.5 rounded text-slate-400 hover:text-slate-100 hover:bg-gov-sidebarHover text-[12.5px] transition-colors">
+              <div class="flex items-center gap-2.5">
+                <svg class="w-4 h-4 stroke-[1.8]" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M22 12h-6l-2 3h-4l-2-3H2v7a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-7z"></path><path d="M5.45 5.11L2 12v0a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v0l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"></path></svg>
+                <span>Governance Inbox</span>
+              </div>
+              <span class="px-1.5 py-0.5 text-[10px] font-mono font-medium rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30">6</span>
+            </a>
+          </div>
+        </div>
+
+        <!-- Section: METADATA & ONTOLOGY -->
+        <div>
+          <div class="px-2 pb-1.5 text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Metadata & Ontology</div>
+          <div class="space-y-0.5">
+            <a href="#" class="flex items-center gap-2.5 px-2.5 py-1.5 rounded text-slate-400 hover:text-slate-100 hover:bg-gov-sidebarHover text-[12.5px] transition-colors">
+              <svg class="w-4 h-4 stroke-[1.8]" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path></svg>
+              <span>Asset Catalog</span>
+            </a>
+            <!-- ACTIVE ITEM -->
+            <a href="#" class="flex items-center justify-between px-2.5 py-1.5 rounded bg-blue-600/20 text-blue-300 font-medium border-l-2 border-blue-500 text-[12.5px]">
+              <div class="flex items-center gap-2.5">
+                <svg class="w-4 h-4 stroke-[2] text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="18" cy="5" r="3"></circle><circle cx="6" cy="12" r="3"></circle><circle cx="18" cy="19" r="3"></circle><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"></line><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"></line></svg>
+                <span>Semantic Ontology</span>
+              </div>
+              <span class="w-1.5 h-1.5 rounded-full bg-blue-400"></span>
+            </a>
+            <a href="#" class="flex items-center gap-2.5 px-2.5 py-1.5 rounded text-slate-400 hover:text-slate-100 hover:bg-gov-sidebarHover text-[12.5px] transition-colors">
+              <svg class="w-4 h-4 stroke-[1.8]" fill="none" stroke="currentColor" viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg>
+              <span>Field Lineage</span>
+            </a>
+            <a href="#" class="flex items-center gap-2.5 px-2.5 py-1.5 rounded text-slate-400 hover:text-slate-100 hover:bg-gov-sidebarHover text-[12.5px] transition-colors">
+              <svg class="w-4 h-4 stroke-[1.8]" fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+              <span>Sensitivity Matrix</span>
+            </a>
+          </div>
+        </div>
+
+        <!-- Section: DATA INTEGRATION -->
+        <div>
+          <div class="px-2 pb-1.5 text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Data Integration</div>
+          <div class="space-y-0.5">
+            <a href="#" class="flex items-center gap-2.5 px-2.5 py-1.5 rounded text-slate-400 hover:text-slate-100 hover:bg-gov-sidebarHover text-[12.5px] transition-colors">
+              <svg class="w-4 h-4 stroke-[1.8]" fill="none" stroke="currentColor" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path></svg>
+              <span>Data Sources</span>
+            </a>
+            <a href="#" class="flex items-center gap-2.5 px-2.5 py-1.5 rounded text-slate-400 hover:text-slate-100 hover:bg-gov-sidebarHover text-[12.5px] transition-colors">
+              <svg class="w-4 h-4 stroke-[1.8]" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"></path></svg>
+              <span>Sync Jobs & DAGs</span>
+            </a>
+            <a href="#" class="flex items-center gap-2.5 px-2.5 py-1.5 rounded text-slate-400 hover:text-slate-100 hover:bg-gov-sidebarHover text-[12.5px] transition-colors">
+              <svg class="w-4 h-4 stroke-[1.8]" fill="none" stroke="currentColor" viewBox="0 0 24 24"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>
+              <span>Transformation Rules</span>
+            </a>
+          </div>
+        </div>
+
+        <!-- Section: GOVERNANCE & AUDIT -->
+        <div>
+          <div class="px-2 pb-1.5 text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Governance</div>
+          <div class="space-y-0.5">
+            <a href="#" class="flex items-center gap-2.5 px-2.5 py-1.5 rounded text-slate-400 hover:text-slate-100 hover:bg-gov-sidebarHover text-[12.5px] transition-colors">
+              <svg class="w-4 h-4 stroke-[1.8]" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>
+              <span>Quality Monitor</span>
+            </a>
+            <a href="#" class="flex items-center gap-2.5 px-2.5 py-1.5 rounded text-slate-400 hover:text-slate-100 hover:bg-gov-sidebarHover text-[12.5px] transition-colors">
+              <svg class="w-4 h-4 stroke-[1.8]" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
+              <span>Audit Log (G1–G5)</span>
+            </a>
+          </div>
+        </div>
+
+        <!-- Section: AI INSIGHT -->
+        <div>
+          <div class="px-2 pb-1.5 text-[10px] font-semibold text-slate-400 uppercase tracking-wider">AI Insight</div>
+          <div class="space-y-0.5">
+            <a href="#" class="flex items-center gap-2.5 px-2.5 py-1.5 rounded text-slate-400 hover:text-slate-100 hover:bg-gov-sidebarHover text-[12.5px] transition-colors">
+              <svg class="w-4 h-4 stroke-[1.8] text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 0 10 10H12V2z"></path><path d="M12 12L2.7 7.7"></path><path d="M12 12V22"></path></svg>
+              <span>Ask Data AI</span>
+            </a>
+          </div>
+        </div>
+
+        <!-- Section: SETTINGS -->
+        <div>
+          <div class="px-2 pb-1.5 text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Settings</div>
+          <div class="space-y-0.5">
+            <a href="#" class="flex items-center gap-2.5 px-2.5 py-1.5 rounded text-slate-400 hover:text-slate-100 hover:bg-gov-sidebarHover text-[12.5px] transition-colors">
+              <svg class="w-4 h-4 stroke-[1.8]" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+              <span>Workspaces & Roles</span>
+            </a>
+          </div>
+        </div>
+      </nav>
+
+      <!-- Bottom Rail Cluster -->
+      <div class="p-3 border-t border-slate-800 bg-slate-900/60">
+        <div class="flex items-center justify-between text-[11px] text-slate-400">
+          <div class="flex items-center gap-1.5 font-mono">
+            <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+            <span>Kernel Node 04</span>
+          </div>
+          <span class="text-slate-400 font-mono text-[10px]">Region: us-east-1</span>
+        </div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ========================================================================= -->
+  <!-- MAIN WORKSPACE VIEWPORT (FLEX COLUMN) -->
+  <!-- ========================================================================= -->
+  <main class="flex-1 flex flex-col h-full min-w-0 overflow-hidden bg-slate-50">
+
+    <!-- 2. STICKY TOP UTILITY HEADER (56px) -->
+    <header class="h-14 flex-shrink-0 bg-white border-b border-gov-border px-5 flex items-center justify-between z-20 shadow-[0_1px_2px_rgba(0,0,0,0.03)]">
+      <!-- Breadcrumb -->
+      <div class="flex items-center gap-2 text-xs">
+        <span class="text-gov-textMuted font-medium hover:text-gov-textMain cursor-pointer">Metadata & Ontology</span>
+        <svg class="w-3.5 h-3.5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"></polyline></svg>
+        <span class="text-gov-textMuted font-medium hover:text-gov-textMain cursor-pointer">Semantic Ontology</span>
+        <svg class="w-3.5 h-3.5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"></polyline></svg>
+        <span class="text-gov-textMain font-semibold px-2 py-0.5 rounded bg-slate-100 font-mono text-[11px] text-slate-700">Metrics (6D Engine)</span>
+      </div>
+
+      <!-- Right Utility Actions -->
+      <div class="flex items-center gap-3">
+        <!-- Tenant Switcher Pill -->
+        <div class="flex items-center gap-2 px-2.5 py-1 rounded-md bg-slate-100/90 border border-slate-200 text-xs font-medium text-slate-700 hover:bg-slate-200/80 cursor-pointer transition">
+          <span class="w-2 h-2 rounded-full bg-blue-600"></span>
+          <span>Workspace: <strong class="font-semibold text-slate-900">Clinical-Prod</strong></span>
+          <svg class="w-3.5 h-3.5 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+        </div>
+
+        <!-- Governance Inbox Notification Badge -->
+        <button class="relative p-1.5 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-md transition" title="Governance Inbox">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path><path d="M13.73 21a2 2 0 0 1-3.46 0"></path></svg>
+          <span class="absolute top-1 right-1 w-2 h-2 bg-amber-500 rounded-full ring-2 ring-white"></span>
+        </button>
+
+        <div class="h-4 w-[1px] bg-slate-200"></div>
+
+        <!-- AgentDock Toggle Button -->
+        <button class="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-indigo-50 border border-indigo-200 text-indigo-700 text-xs font-medium hover:bg-indigo-100 transition shadow-xs">
+          <svg class="w-3.5 h-3.5 text-indigo-600" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a4 4 0 0 1 4 4v2a4 4 0 0 1-8 0V6a4 4 0 0 1 4-4z"></path><rect x="3" y="10" width="18" height="12" rx="2"></rect><circle cx="8" cy="15" r="1"></circle><circle cx="16" cy="15" r="1"></circle></svg>
+          <span>AgentDock</span>
+          <span class="px-1 py-0.2 rounded text-[10px] bg-indigo-200/60 font-mono font-bold">ON</span>
+        </button>
+
+        <!-- User Profile Avatar -->
+        <div class="flex items-center gap-2 pl-1 cursor-pointer">
+          <div class="w-7 h-7 rounded-full bg-slate-800 text-white font-medium text-xs flex items-center justify-center ring-2 ring-slate-100">
+            DR
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <!-- 3. COMPACT PAGE HEADER & SNAPSHOT DETAILS -->
+    <div class="flex-shrink-0 bg-white border-b border-gov-border px-5 py-3 flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <h1 class="text-base font-bold text-gov-textMain tracking-tight">Semantic Ontology & 6D Metrics</h1>
+        <div class="flex items-center gap-1.5 px-2 py-0.5 bg-slate-100 border border-slate-200 rounded text-[11px] text-slate-600 font-mono">
+          <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+          <span>Snapshot v14</span>
+          <span class="text-slate-300">·</span>
+          <span class="text-slate-500">sha256:9f4a2c</span>
+        </div>
+        <span class="text-slate-400 text-xs">|</span>
+        <span class="text-xs text-gov-textMuted">Sync state: <span class="text-emerald-700 font-medium font-mono">UP_TO_DATE (0 drift)</span></span>
+      </div>
+
+      <!-- Action Buttons -->
+      <div class="flex items-center gap-2">
+        <button class="inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 text-xs font-medium rounded shadow-xs transition">
+          <svg class="w-3.5 h-3.5 text-slate-500" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+          Import YAML
+        </button>
+        <button class="inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 text-xs font-medium rounded shadow-xs transition">
+          <svg class="w-3.5 h-3.5 text-slate-500" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
+          Export YAML
+        </button>
+        <button class="inline-flex items-center gap-1.5 px-3 py-1.5 bg-gov-primary hover:bg-gov-primaryHover text-white text-xs font-medium rounded shadow-xs transition">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+          New Semantic Object
+        </button>
+      </div>
+    </div>
+
+    <!-- 4. HAIRLINE-DIVIDED GOVERNANCE SUMMARY STRIP (Single horizontal strip with hairline dividers) -->
+    <section class="flex-shrink-0 bg-white border-b border-gov-border flex items-stretch divide-x divide-gov-border px-5 py-2 select-none">
+      <!-- Metric Item 1 -->
+      <div class="flex items-center gap-3 pr-6 py-0.5">
+        <div class="w-7 h-7 rounded bg-blue-50 border border-blue-100 flex items-center justify-center text-blue-600">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"></polyline></svg>
+        </div>
+        <div>
+          <div class="text-[11px] text-gov-textMuted font-medium uppercase tracking-wider">Published Objects</div>
+          <div class="flex items-baseline gap-1.5">
+            <span class="text-base font-bold font-mono text-slate-900 leading-tight">128</span>
+            <span class="text-[10px] text-emerald-600 font-medium font-mono">+12 this wk</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Metric Item 2 -->
+      <div class="flex items-center gap-3 px-6 py-0.5">
+        <div class="w-7 h-7 rounded bg-amber-50 border border-amber-200 flex items-center justify-center text-amber-600">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
+        </div>
+        <div>
+          <div class="text-[11px] text-gov-textMuted font-medium uppercase tracking-wider">Pending Human Review</div>
+          <div class="flex items-baseline gap-1.5">
+            <span class="text-base font-bold font-mono text-amber-700 leading-tight">6</span>
+            <span class="text-[10px] text-amber-700 font-medium bg-amber-100 px-1 py-0.2 rounded">SLA &lt; 24h</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Metric Item 3 -->
+      <div class="flex items-center gap-3 px-6 py-0.5">
+        <div class="w-7 h-7 rounded bg-rose-50 border border-rose-200 flex items-center justify-center text-rose-600">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
+        </div>
+        <div>
+          <div class="text-[11px] text-gov-textMuted font-medium uppercase tracking-wider">Stale Review G5</div>
+          <div class="flex items-baseline gap-1.5">
+            <span class="text-base font-bold font-mono text-rose-700 leading-tight">2</span>
+            <span class="text-[10px] text-rose-600 font-medium font-mono">Requires Sign-off</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Metric Item 4 -->
+      <div class="flex items-center gap-3 pl-6 py-0.5 flex-1">
+        <div class="w-7 h-7 rounded bg-emerald-50 border border-emerald-200 flex items-center justify-center text-emerald-600">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path><polyline points="9 12 11 14 15 10"></polyline></svg>
+        </div>
+        <div class="flex-1">
+          <div class="text-[11px] text-gov-textMuted font-medium uppercase tracking-wider">Probe CI Gate</div>
+          <div class="flex items-center gap-2">
+            <span class="text-xs font-semibold text-emerald-800 font-mono">All 6 Probes Passing</span>
+            <span class="text-[10px] font-mono text-slate-500">(Fan-out, Additivity, Semi-Add, NULL Dim, Div-Zero, Magnitude)</span>
+          </div>
+        </div>
+        <div class="text-right">
+          <span class="text-[11px] text-slate-500 font-mono">CI Duration: 312ms</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- 5. PRIMARY ASYMMETRIC 65 / 35 SPLIT WORKBENCH -->
+    <div class="flex-1 flex overflow-hidden min-h-0">
+
+      <!-- ======================================================================= -->
+      <!-- LEFT PANE (65% width) — High-Density Semantic Object Table -->
+      <!-- ======================================================================= -->
+      <section class="w-[65%] flex flex-col border-r border-gov-border bg-white min-w-0">
+        <!-- Toolbar & Filter Tabs -->
+        <div class="p-2.5 border-b border-gov-border bg-slate-50/70 flex flex-wrap items-center justify-between gap-2 flex-shrink-0">
+          <!-- Segmented Object-Type Filter Tabs -->
+          <div class="inline-flex p-0.5 rounded bg-slate-200/80 border border-slate-300 text-xs font-medium text-slate-600">
+            <button class="px-2.5 py-1 rounded text-slate-600 hover:text-slate-900 transition">All <span class="text-[10px] font-mono opacity-70">142</span></button>
+            <button class="px-2.5 py-1 rounded text-slate-600 hover:text-slate-900 transition">Entity</button>
+            <button class="px-2.5 py-1 rounded text-slate-600 hover:text-slate-900 transition">Dimension</button>
+            <button class="px-2.5 py-1 rounded text-slate-600 hover:text-slate-900 transition">Fact</button>
+            <!-- ACTIVE TAB -->
+            <button class="px-2.5 py-1 rounded bg-white text-gov-primary font-semibold shadow-xs">Metric <span class="text-[10px] font-mono bg-blue-100 text-gov-primary px-1 rounded ml-1">48</span></button>
+            <button class="px-2.5 py-1 rounded text-slate-600 hover:text-slate-900 transition">Concept</button>
+          </div>
+
+          <!-- Search & Filters -->
+          <div class="flex items-center gap-2">
+            <div class="relative w-56">
+              <svg class="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+              <input type="text" placeholder="Search canonical code, name..." value="sales.metric" class="w-full pl-8 pr-3 py-1 bg-white border border-slate-300 rounded text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-blue-500 font-mono">
+            </div>
+
+            <!-- Status Dropdown -->
+            <select class="px-2 py-1 bg-white border border-slate-300 rounded text-xs text-slate-700 focus:outline-none focus:ring-1 focus:ring-blue-500">
+              <option>Status: All</option>
+              <option selected>Status: All Active & Proposed</option>
+              <option>Status: Published</option>
+              <option>Status: Proposed</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Table Container (Scrollable High Density) -->
+        <div class="flex-1 overflow-auto min-h-0">
+          <table class="w-full text-left border-collapse border-spacing-0">
+            <thead class="sticky top-0 bg-slate-100 text-slate-600 font-semibold text-[11px] uppercase tracking-wider border-b border-gov-border z-10 select-none">
+              <tr>
+                <th class="py-2.5 px-3 w-8 text-center">
+                  <input type="checkbox" class="rounded border-slate-300 text-gov-primary focus:ring-0">
+                </th>
+                <th class="py-2.5 px-3">Canonical Code</th>
+                <th class="py-2.5 px-3">Business Name</th>
+                <th class="py-2.5 px-3">Additivity Axis</th>
+                <th class="py-2.5 px-2.5 text-center">Tier</th>
+                <th class="py-2.5 px-3">Provenance</th>
+                <th class="py-2.5 px-3">Verification Gate</th>
+                <th class="py-2.5 px-3">Status</th>
+                <th class="py-2.5 px-3 text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-100 text-xs">
+
+              <!-- ROW 1: ACTIVELY SELECTED (sales.metric.return_rate) -->
+              <tr class="bg-blue-50/70 border-l-4 border-gov-primary hover:bg-blue-50 transition cursor-pointer font-medium">
+                <td class="py-2 px-3 text-center">
+                  <input type="checkbox" checked class="rounded border-blue-400 text-gov-primary focus:ring-0">
+                </td>
+                <td class="py-2 px-3">
+                  <div class="flex items-center gap-1.5">
+                    <span class="code-pill font-mono text-gov-primary font-semibold text-[12px]">sales.metric.return_rate</span>
+                    <span class="text-[10px] text-blue-600 font-mono bg-blue-100/80 px-1 rounded">active</span>
+                  </div>
+                </td>
+                <td class="py-2 px-3 text-slate-900 font-medium">Return Rate</td>
+                <td class="py-2 px-3">
+                  <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-mono bg-amber-50 text-amber-800 border border-amber-200">
+                    Non-Additive
+                  </span>
+                </td>
+                <td class="py-2 px-2.5 text-center">
+                  <span class="inline-flex px-1.5 py-0.2 rounded text-[10px] font-mono font-bold bg-slate-200 text-slate-800">L2</span>
+                </td>
+                <td class="py-2 px-3">
+                  <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10.5px] font-mono bg-purple-50 text-purple-700 border border-purple-200">
+                    <svg class="w-3 h-3 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M12 2a4 4 0 0 1 4 4v2a4 4 0 0 1-8 0V6a4 4 0 0 1 4-4z"></path><rect x="3" y="10" width="18" height="12" rx="2"></rect></svg>
+                    llm_inference
+                  </span>
+                </td>
+                <td class="py-2 px-3">
+                  <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10.5px] font-mono bg-amber-50 text-amber-800 border border-amber-200 font-medium">
+                    <span class="w-1.5 h-1.5 rounded-full bg-amber-500"></span>
+                    LOW_CONFIDENCE
+                  </span>
+                </td>
+                <td class="py-2 px-3">
+                  <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10.5px] font-semibold bg-amber-100 text-amber-900 border border-amber-300">
+                    PROPOSED
+                  </span>
+                </td>
+                <td class="py-2 px-3 text-right">
+                  <button class="p-1 text-slate-400 hover:text-gov-primary rounded" title="Inspect">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7"></path></svg>
+                  </button>
+                </td>
+              </tr>
+
+              <!-- ROW 2: clinical.metric.readmit_30d -->
+              <tr class="hover:bg-slate-50 transition cursor-pointer">
+                <td class="py-2 px-3 text-center">
+                  <input type="checkbox" class="rounded border-slate-300 text-gov-primary focus:ring-0">
+                </td>
+                <td class="py-2 px-3">
+                  <span class="code-pill font-mono text-slate-800 text-[12px]">clinical.metric.readmit_30d</span>
+                </td>
+                <td class="py-2 px-3 text-slate-700">30-Day Readmission Rate</td>
+                <td class="py-2 px-3">
+                  <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-mono bg-slate-100 text-slate-700 border border-slate-200">
+                    Non-Additive
+                  </span>
+                </td>
+                <td class="py-2 px-2.5 text-center">
+                  <span class="inline-flex px-1.5 py-0.2 rounded text-[10px] font-mono font-bold bg-rose-100 text-rose-800 border border-rose-200">L3</span>
+                </td>
+                <td class="py-2 px-3">
+                  <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10.5px] font-mono bg-blue-50 text-blue-700 border border-blue-200">
+                    <svg class="w-3 h-3 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"></circle><path d="M19 12a7 7 0 1 0-7 7"></path></svg>
+                    knowledge_graph
+                  </span>
+                </td>
+                <td class="py-2 px-3">
+                  <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10.5px] font-mono bg-emerald-50 text-emerald-800 border border-emerald-200 font-medium">
+                    <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+                    PASS
+                  </span>
+                </td>
+                <td class="py-2 px-3">
+                  <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10.5px] font-semibold bg-emerald-100 text-emerald-800 border border-emerald-300">
+                    PUBLISHED
+                  </span>
+                </td>
+                <td class="py-2 px-3 text-right">
+                  <button class="p-1 text-slate-400 hover:text-slate-600 rounded">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="1"></circle><circle cx="19" cy="12" r="1"></circle><circle cx="5" cy="12" r="1"></circle></svg>
+                  </button>
+                </td>
+              </tr>
+
+              <!-- ROW 3: finance.metric.ending_balance -->
+              <tr class="hover:bg-slate-50 transition cursor-pointer">
+                <td class="py-2 px-3 text-center">
+                  <input type="checkbox" class="rounded border-slate-300 text-gov-primary focus:ring-0">
+                </td>
+                <td class="py-2 px-3">
+                  <span class="code-pill font-mono text-slate-800 text-[12px]">finance.metric.ending_balance</span>
+                </td>
+                <td class="py-2 px-3 text-slate-700">Daily Ending Balance</td>
+                <td class="py-2 px-3">
+                  <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-mono bg-indigo-50 text-indigo-700 border border-indigo-200">
+                    Semi-Additive
+                  </span>
+                </td>
+                <td class="py-2 px-2.5 text-center">
+                  <span class="inline-flex px-1.5 py-0.2 rounded text-[10px] font-mono font-bold bg-amber-100 text-amber-800 border border-amber-200">L2</span>
+                </td>
+                <td class="py-2 px-3">
+                  <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10.5px] font-mono bg-slate-100 text-slate-700 border border-slate-200">
+                    <svg class="w-3 h-3 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path></svg>
+                    db_constraint
+                  </span>
+                </td>
+                <td class="py-2 px-3">
+                  <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10.5px] font-mono bg-emerald-50 text-emerald-800 border border-emerald-200 font-medium">
+                    <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+                    PASS
+                  </span>
+                </td>
+                <td class="py-2 px-3">
+                  <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10.5px] font-semibold bg-emerald-100 text-emerald-800 border border-emerald-300">
+                    PUBLISHED
+                  </span>
+                </td>
+                <td class="py-2 px-3 text-right">
+                  <button class="p-1 text-slate-400 hover:text-slate-600 rounded">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="1"></circle><circle cx="19" cy="12" r="1"></circle><circle cx="5" cy="12" r="1"></circle></svg>
+                  </button>
+                </td>
+              </tr>
+
+              <!-- ROW 4: sales.metric.net_revenue -->
+              <tr class="hover:bg-slate-50 transition cursor-pointer">
+                <td class="py-2 px-3 text-center">
+                  <input type="checkbox" class="rounded border-slate-300 text-gov-primary focus:ring-0">
+                </td>
+                <td class="py-2 px-3">
+                  <span class="code-pill font-mono text-slate-800 text-[12px]">sales.metric.net_revenue</span>
+                </td>
+                <td class="py-2 px-3 text-slate-700">Net Recognized Revenue</td>
+                <td class="py-2 px-3">
+                  <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-mono bg-blue-50 text-blue-700 border border-blue-200">
+                    Additive
+                  </span>
+                </td>
+                <td class="py-2 px-2.5 text-center">
+                  <span class="inline-flex px-1.5 py-0.2 rounded text-[10px] font-mono font-bold bg-slate-200 text-slate-800">L1</span>
+                </td>
+                <td class="py-2 px-3">
+                  <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10.5px] font-mono bg-slate-100 text-slate-700 border border-slate-200">
+                    <svg class="w-3 h-3 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path></svg>
+                    db_constraint
+                  </span>
+                </td>
+                <td class="py-2 px-3">
+                  <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10.5px] font-mono bg-emerald-50 text-emerald-800 border border-emerald-200 font-medium">
+                    <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+                    PASS
+                  </span>
+                </td>
+                <td class="py-2 px-3">
+                  <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10.5px] font-semibold bg-emerald-100 text-emerald-800 border border-emerald-300">
+                    PUBLISHED
+                  </span>
+                </td>
+                <td class="py-2 px-3 text-right">
+                  <button class="p-1 text-slate-400 hover:text-slate-600 rounded">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="1"></circle><circle cx="19" cy="12" r="1"></circle><circle cx="5" cy="12" r="1"></circle></svg>
+                  </button>
+                </td>
+              </tr>
+
+              <!-- ROW 5: clinical.metric.patient_los -->
+              <tr class="hover:bg-slate-50 transition cursor-pointer">
+                <td class="py-2 px-3 text-center">
+                  <input type="checkbox" class="rounded border-slate-300 text-gov-primary focus:ring-0">
+                </td>
+                <td class="py-2 px-3">
+                  <span class="code-pill font-mono text-slate-800 text-[12px]">clinical.metric.patient_los</span>
+                </td>
+                <td class="py-2 px-3 text-slate-700">Average Length of Stay</td>
+                <td class="py-2 px-3">
+                  <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-mono bg-amber-50 text-amber-800 border border-amber-200">
+                    Non-Additive
+                  </span>
+                </td>
+                <td class="py-2 px-2.5 text-center">
+                  <span class="inline-flex px-1.5 py-0.2 rounded text-[10px] font-mono font-bold bg-rose-100 text-rose-800 border border-rose-200">L3</span>
+                </td>
+                <td class="py-2 px-3">
+                  <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10.5px] font-mono bg-blue-50 text-blue-700 border border-blue-200">
+                    <svg class="w-3 h-3 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"></circle><path d="M19 12a7 7 0 1 0-7 7"></path></svg>
+                    knowledge_graph
+                  </span>
+                </td>
+                <td class="py-2 px-3">
+                  <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10.5px] font-mono bg-rose-50 text-rose-800 border border-rose-200 font-medium">
+                    <span class="w-1.5 h-1.5 rounded-full bg-rose-500"></span>
+                    STALE_REVIEW
+                  </span>
+                </td>
+                <td class="py-2 px-3">
+                  <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10.5px] font-semibold bg-emerald-100 text-emerald-800 border border-emerald-300">
+                    PUBLISHED
+                  </span>
+                </td>
+                <td class="py-2 px-3 text-right">
+                  <button class="p-1 text-slate-400 hover:text-slate-600 rounded">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="1"></circle><circle cx="19" cy="12" r="1"></circle><circle cx="5" cy="12" r="1"></circle></svg>
+                  </button>
+                </td>
+              </tr>
+
+              <!-- ROW 6: supply.metric.lead_time_variance -->
+              <tr class="hover:bg-slate-50 transition cursor-pointer">
+                <td class="py-2 px-3 text-center">
+                  <input type="checkbox" class="rounded border-slate-300 text-gov-primary focus:ring-0">
+                </td>
+                <td class="py-2 px-3">
+                  <span class="code-pill font-mono text-slate-800 text-[12px]">supply.metric.lead_time_variance</span>
+                </td>
+                <td class="py-2 px-3 text-slate-700">Vendor Delivery Variance</td>
+                <td class="py-2 px-3">
+                  <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-mono bg-amber-50 text-amber-800 border border-amber-200">
+                    Non-Additive
+                  </span>
+                </td>
+                <td class="py-2 px-2.5 text-center">
+                  <span class="inline-flex px-1.5 py-0.2 rounded text-[10px] font-mono font-bold bg-slate-200 text-slate-800">L1</span>
+                </td>
+                <td class="py-2 px-3">
+                  <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10.5px] font-mono bg-purple-50 text-purple-700 border border-purple-200">
+                    <svg class="w-3 h-3 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M12 2a4 4 0 0 1 4 4v2a4 4 0 0 1-8 0V6a4 4 0 0 1 4-4z"></path><rect x="3" y="10" width="18" height="12" rx="2"></rect></svg>
+                    llm_inference
+                  </span>
+                </td>
+                <td class="py-2 px-3">
+                  <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10.5px] font-mono bg-emerald-50 text-emerald-800 border border-emerald-200 font-medium">
+                    <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+                    PASS
+                  </span>
+                </td>
+                <td class="py-2 px-3">
+                  <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10.5px] font-semibold bg-emerald-100 text-emerald-800 border border-emerald-300">
+                    PUBLISHED
+                  </span>
+                </td>
+                <td class="py-2 px-3 text-right">
+                  <button class="p-1 text-slate-400 hover:text-slate-600 rounded">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="1"></circle><circle cx="19" cy="12" r="1"></circle><circle cx="5" cy="12" r="1"></circle></svg>
+                  </button>
+                </td>
+              </tr>
+
+              <!-- ROW 7: marketing.metric.cac_blended -->
+              <tr class="hover:bg-slate-50 transition cursor-pointer">
+                <td class="py-2 px-3 text-center">
+                  <input type="checkbox" class="rounded border-slate-300 text-gov-primary focus:ring-0">
+                </td>
+                <td class="py-2 px-3">
+                  <span class="code-pill font-mono text-slate-800 text-[12px]">marketing.metric.cac_blended</span>
+                </td>
+                <td class="py-2 px-3 text-slate-700">Blended Customer Acquisition Cost</td>
+                <td class="py-2 px-3">
+                  <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-mono bg-amber-50 text-amber-800 border border-amber-200">
+                    Non-Additive
+                  </span>
+                </td>
+                <td class="py-2 px-2.5 text-center">
+                  <span class="inline-flex px-1.5 py-0.2 rounded text-[10px] font-mono font-bold bg-amber-100 text-amber-800 border border-amber-200">L2</span>
+                </td>
+                <td class="py-2 px-3">
+                  <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10.5px] font-mono bg-slate-100 text-slate-700 border border-slate-200">
+                    <svg class="w-3 h-3 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path></svg>
+                    db_constraint
+                  </span>
+                </td>
+                <td class="py-2 px-3">
+                  <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10.5px] font-mono bg-emerald-50 text-emerald-800 border border-emerald-200 font-medium">
+                    <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+                    PASS
+                  </span>
+                </td>
+                <td class="py-2 px-3">
+                  <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10.5px] font-semibold bg-emerald-100 text-emerald-800 border border-emerald-300">
+                    PUBLISHED
+                  </span>
+                </td>
+                <td class="py-2 px-3 text-right">
+                  <button class="p-1 text-slate-400 hover:text-slate-600 rounded">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="1"></circle><circle cx="19" cy="12" r="1"></circle><circle cx="5" cy="12" r="1"></circle></svg>
+                  </button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- Table Pagination Footer -->
+        <div class="px-4 py-2 border-t border-gov-border bg-slate-50/80 flex items-center justify-between text-xs text-slate-500 select-none">
+          <div class="font-mono text-[11px]">
+            Showing <strong class="text-slate-800">1–7</strong> of <strong class="text-slate-800">48</strong> metrics (filter: `sales.metric`)
+          </div>
+          <div class="flex items-center gap-2">
+            <span class="text-[11px]">Page 1 of 7</span>
+            <div class="inline-flex rounded border border-slate-300 shadow-2xs">
+              <button class="px-2 py-0.5 text-xs text-slate-400 bg-white cursor-not-allowed">‹</button>
+              <button class="px-2 py-0.5 text-xs text-slate-700 bg-white hover:bg-slate-50 border-l border-slate-300">›</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ======================================================================= -->
+      <!-- RIGHT PANE (35% width) — Slide-Over Style 6D Metric Inspector Panel -->
+      <!-- ======================================================================= -->
+      <section class="w-[35%] flex flex-col bg-white overflow-hidden shadow-[-2px_0_6px_rgba(0,0,0,0.02)] min-w-0">
+        
+        <!-- Inspector Header -->
+        <div class="p-4 border-b border-gov-border bg-slate-50/50 flex-shrink-0">
+          <div class="flex items-start justify-between gap-2">
+            <div>
+              <div class="flex items-center gap-2">
+                <span class="text-base font-bold text-slate-900 leading-tight">Return Rate</span>
+                <span class="px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-100 text-amber-800 border border-amber-300">
+                  PROPOSED · Human Review Required
+                </span>
+              </div>
+              <div class="code-pill font-mono text-xs text-gov-primary mt-0.5 font-medium">sales.metric.return_rate</div>
+            </div>
+            <!-- Close / Pin Icons -->
+            <div class="flex items-center gap-1 text-slate-400">
+              <button class="p-1 hover:text-slate-700 rounded hover:bg-slate-100"><svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"></path></svg></button>
+              <button class="p-1 hover:text-slate-700 rounded hover:bg-slate-100"><svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"></path></svg></button>
+            </div>
+          </div>
+
+          <!-- Inspector Tabs -->
+          <div class="flex border-b border-slate-200 mt-3 -mb-4 text-xs font-medium">
+            <button class="pb-2.5 px-3 border-b-2 border-gov-primary text-gov-primary font-semibold flex items-center gap-1">
+              <span>6D Spec</span>
+              <span class="w-1.5 h-1.5 rounded-full bg-blue-600"></span>
+            </button>
+            <button class="pb-2.5 px-3 border-b-2 border-transparent text-slate-500 hover:text-slate-800">YAML Projection</button>
+            <button class="pb-2.5 px-3 border-b-2 border-transparent text-slate-500 hover:text-slate-800">Lineage & Refs</button>
+            <button class="pb-2.5 px-3 border-b-2 border-transparent text-slate-500 hover:text-slate-800 flex items-center gap-1">
+              <span>Verification</span>
+              <span class="px-1 text-[9px] rounded bg-emerald-100 text-emerald-800 font-mono">G1-G4</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Inspector Content Body (Scrollable) -->
+        <div class="flex-1 overflow-y-auto p-4 space-y-4 pt-5">
+
+          <!-- SECTION: SIX-DIMENSIONAL ORTHOGONAL SPEC BREAKDOWN -->
+          <div class="space-y-2">
+            <div class="flex items-center justify-between">
+              <span class="text-[11px] font-bold uppercase tracking-wider text-slate-500 flex items-center gap-1.5">
+                <svg class="w-3.5 h-3.5 text-blue-600" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg>
+                Six-Dimensional Orthogonal Spec
+              </span>
+              <span class="text-[10px] font-mono text-slate-400">Strict Ontology Schema</span>
+            </div>
+
+            <!-- 6D Spec Grid Cards -->
+            <div class="rounded border border-gov-border bg-slate-50/50 divide-y divide-slate-100 text-xs">
+              
+              <!-- D1: Additivity -->
+              <div class="p-2.5 flex items-start justify-between gap-3">
+                <div class="w-28 flex-shrink-0">
+                  <span class="font-semibold text-slate-700 block">1. Additivity</span>
+                  <span class="text-[10px] text-slate-400 font-mono">Aggregation rule</span>
+                </div>
+                <div class="flex-1 text-right">
+                  <div class="flex items-center justify-end gap-1.5">
+                    <span class="font-mono text-amber-800 font-semibold bg-amber-100/80 px-1.5 py-0.5 rounded text-[11px]">non_additive</span>
+                    <span class="inline-flex items-center gap-0.5 px-1 py-0.2 rounded text-[10px] font-mono bg-purple-100 text-purple-700">
+                      llm_inference
+                    </span>
+                  </div>
+                  <div class="flex items-center justify-end gap-1 text-[10.5px] text-amber-700 mt-1">
+                    <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+                    <span>Ratio aggregation lock · Human sign-off required</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- D2: Level of Detail (LOD) -->
+              <div class="p-2.5 flex items-start justify-between gap-3">
+                <div class="w-28 flex-shrink-0">
+                  <span class="font-semibold text-slate-700 block">2. LOD Grain</span>
+                  <span class="text-[10px] text-slate-400 font-mono">Grain restriction</span>
+                </div>
+                <div class="flex-1 text-right font-mono">
+                  <span class="text-slate-800 font-medium bg-slate-100 px-1.5 py-0.5 rounded text-[11px]">NONE (Inherits Query Context)</span>
+                </div>
+              </div>
+
+              <!-- D3: Composition Expression -->
+              <div class="p-2.5 flex items-start justify-between gap-3">
+                <div class="w-28 flex-shrink-0">
+                  <span class="font-semibold text-slate-700 block">3. Composition</span>
+                  <span class="text-[10px] text-slate-400 font-mono">Calculated AST</span>
+                </div>
+                <div class="flex-1 text-right">
+                  <span class="inline-block text-[10px] font-mono text-blue-700 bg-blue-50 border border-blue-200 px-1.5 py-0.2 rounded">ratio</span>
+                  <div class="mt-1 font-mono text-[11px] text-slate-800 bg-white border border-slate-200 rounded p-1.5 text-left overflow-x-auto shadow-2xs">
+                    <code>${refund_amount} / NULLIF(${gross_revenue}, 0)</code>
+                  </div>
+                </div>
+              </div>
+
+              <!-- D4: Time Calendar -->
+              <div class="p-2.5 flex items-start justify-between gap-3">
+                <div class="w-28 flex-shrink-0">
+                  <span class="font-semibold text-slate-700 block">4. Time Calendar</span>
+                  <span class="text-[10px] text-slate-400 font-mono">Temporal dimension</span>
+                </div>
+                <div class="flex-1 text-right">
+                  <span class="font-mono text-slate-800 text-[11.5px] bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200">
+                    dim.calendar.fiscal
+                  </span>
+                </div>
+              </div>
+
+              <!-- D5: Graph Locality -->
+              <div class="p-2.5 flex items-start justify-between gap-3">
+                <div class="w-28 flex-shrink-0">
+                  <span class="font-semibold text-slate-700 block">5. Graph Locality</span>
+                  <span class="text-[10px] text-slate-400 font-mono">Primary entity anchor</span>
+                </div>
+                <div class="flex-1 text-right">
+                  <div class="flex items-center justify-end gap-1.5">
+                    <span class="font-mono text-emerald-800 bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded text-[11px]">
+                      orders.order_id (PK)
+                    </span>
+                    <span class="text-[10px] text-emerald-700 font-semibold font-mono">VERIFIED</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- D6: Sensitivity & Classification -->
+              <div class="p-2.5 flex items-start justify-between gap-3">
+                <div class="w-28 flex-shrink-0">
+                  <span class="font-semibold text-slate-700 block">6. Sensitivity</span>
+                  <span class="text-[10px] text-slate-400 font-mono">Governance tier</span>
+                </div>
+                <div class="flex-1 text-right">
+                  <span class="font-mono font-bold text-slate-800 bg-slate-200 px-1.5 py-0.5 rounded text-[11px]">
+                    L2 · Internal Restricted (GDPR Masked)
+                  </span>
+                </div>
+              </div>
+
+            </div>
+          </div>
+
+          <!-- SECTION: FOUR-LAYER VERIFICATION GATE CHECKLIST -->
+          <div class="space-y-2">
+            <div class="flex items-center justify-between">
+              <span class="text-[11px] font-bold uppercase tracking-wider text-slate-500 flex items-center gap-1.5">
+                <svg class="w-3.5 h-3.5 text-emerald-600" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>
+                Four-Layer Verification Gate Checklist
+              </span>
+              <span class="text-[10px] font-mono text-emerald-700 font-semibold bg-emerald-50 px-1.5 py-0.2 rounded border border-emerald-200">
+                G1-G4 ACTIVE
+              </span>
+            </div>
+
+            <div class="space-y-2">
+              <!-- Gate 1: G1-G4 Graph Gates -->
+              <div class="p-2.5 rounded border border-emerald-200 bg-emerald-50/40 flex items-start justify-between">
+                <div class="flex items-start gap-2">
+                  <div class="w-4 h-4 rounded-full bg-emerald-600 text-white flex items-center justify-center mt-0.5 flex-shrink-0">
+                    <svg class="w-2.5 h-2.5" fill="none" stroke="currentColor" stroke-width="3" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                  </div>
+                  <div>
+                    <div class="font-semibold text-slate-800 text-xs">G1–G4 Graph Gates</div>
+                    <div class="text-[11px] text-slate-500 mt-0.5">Schema Match, Ref Resolution, Type Strictness, Acyclic DAG.</div>
+                  </div>
+                </div>
+                <span class="font-mono text-[11px] font-bold text-emerald-700 bg-white px-1.5 py-0.5 rounded border border-emerald-200">
+                  PASS
+                </span>
+              </div>
+
+              <!-- Gate 2: Anti-Pattern Lint -->
+              <div class="p-2.5 rounded border border-emerald-200 bg-emerald-50/40 flex items-start justify-between">
+                <div class="flex items-start gap-2">
+                  <div class="w-4 h-4 rounded-full bg-emerald-600 text-white flex items-center justify-center mt-0.5 flex-shrink-0">
+                    <svg class="w-2.5 h-2.5" fill="none" stroke="currentColor" stroke-width="3" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                  </div>
+                  <div>
+                    <div class="font-semibold text-slate-800 text-xs">Anti-Pattern Lint</div>
+                    <div class="text-[11px] text-slate-500 mt-0.5">Static AST scan for Cartesian explosion & unindexed join keys.</div>
+                  </div>
+                </div>
+                <span class="font-mono text-[11px] font-bold text-emerald-700 bg-white px-1.5 py-0.5 rounded border border-emerald-200">
+                  0 VIOLATIONS
+                </span>
+              </div>
+
+              <!-- Gate 3: Statistical Falsification -->
+              <div class="p-2.5 rounded border border-emerald-200 bg-emerald-50/40 flex items-start justify-between">
+                <div class="flex items-start gap-2">
+                  <div class="w-4 h-4 rounded-full bg-emerald-600 text-white flex items-center justify-center mt-0.5 flex-shrink-0">
+                    <svg class="w-2.5 h-2.5" fill="none" stroke="currentColor" stroke-width="3" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                  </div>
+                  <div>
+                    <div class="font-semibold text-slate-800 text-xs">Statistical Falsification</div>
+                    <div class="text-[11px] text-slate-500 mt-0.5">Empirical check: PK uniqueness (1.000) & FK cardinality match (99.4%).</div>
+                  </div>
+                </div>
+                <span class="font-mono text-[11px] font-bold text-emerald-700 bg-white px-1.5 py-0.5 rounded border border-emerald-200">
+                  PASS
+                </span>
+              </div>
+
+              <!-- Gate 4: DuckDB 6-Probe Suite -->
+              <div class="p-2.5 rounded border border-blue-200 bg-blue-50/40">
+                <div class="flex items-start justify-between">
+                  <div class="flex items-start gap-2">
+                    <div class="w-4 h-4 rounded-full bg-blue-600 text-white flex items-center justify-center mt-0.5 flex-shrink-0">
+                      <svg class="w-2.5 h-2.5" fill="none" stroke="currentColor" stroke-width="3" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                    </div>
+                    <div>
+                      <div class="font-semibold text-slate-800 text-xs">DuckDB 6-Probe Suite</div>
+                      <div class="text-[11px] text-slate-500 mt-0.5">Automated runtime falsification probes against live warehouse sample:</div>
+                    </div>
+                  </div>
+                  <span class="font-mono text-[11px] font-bold text-blue-700 bg-white px-1.5 py-0.5 rounded border border-blue-200">
+                    6/6 PASS
+                  </span>
+                </div>
+
+                <!-- 6 Micro Probe Badges -->
+                <div class="mt-2.5 grid grid-cols-2 gap-1.5 pl-6 font-mono text-[10.5px]">
+                  <div class="flex items-center justify-between px-2 py-1 bg-white rounded border border-slate-200">
+                    <span class="text-slate-600">Fan-out:</span>
+                    <span class="text-emerald-700 font-semibold">1.00x (OK)</span>
+                  </div>
+                  <div class="flex items-center justify-between px-2 py-1 bg-white rounded border border-slate-200">
+                    <span class="text-slate-600">Additivity:</span>
+                    <span class="text-emerald-700 font-semibold">Enforced</span>
+                  </div>
+                  <div class="flex items-center justify-between px-2 py-1 bg-white rounded border border-slate-200">
+                    <span class="text-slate-600">Semi-Add:</span>
+                    <span class="text-emerald-700 font-semibold">N/A</span>
+                  </div>
+                  <div class="flex items-center justify-between px-2 py-1 bg-white rounded border border-slate-200">
+                    <span class="text-slate-600">NULL Dim:</span>
+                    <span class="text-emerald-700 font-semibold">0.00%</span>
+                  </div>
+                  <div class="flex items-center justify-between px-2 py-1 bg-white rounded border border-slate-200">
+                    <span class="text-slate-600">Div-Zero:</span>
+                    <span class="text-emerald-700 font-semibold">Guarded</span>
+                  </div>
+                  <div class="flex items-center justify-between px-2 py-1 bg-white rounded border border-slate-200">
+                    <span class="text-slate-600">Magnitude:</span>
+                    <span class="text-emerald-700 font-semibold">μ=0.042 (OK)</span>
+                  </div>
+                </div>
+              </div>
+
+            </div>
+          </div>
+
+          <!-- Audit Warning Note -->
+          <div class="p-3 bg-amber-50/80 border border-amber-200 rounded text-xs text-amber-900 flex items-start gap-2">
+            <svg class="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
+            <div class="text-[11px] leading-relaxed">
+              <strong class="font-semibold">Provenance Warning (G5):</strong> This object was inferred via semantic LLM pipeline with confidence score <code class="font-mono bg-white px-1 py-0.2 rounded border border-amber-300">0.81</code>. Publishing commits this definition into canonical query routing.
+            </div>
+          </div>
+
+        </div>
+
+        <!-- Inspector Footer Approval Bar -->
+        <div class="p-3.5 border-t border-gov-border bg-slate-50 flex items-center justify-between flex-shrink-0">
+          <button class="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-300 hover:bg-slate-100 text-slate-700 text-xs font-medium rounded transition shadow-2xs">
+            <svg class="w-3.5 h-3.5 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
+            Run Probes Again
+          </button>
+
+          <div class="flex items-center gap-2">
+            <button class="px-3 py-1.5 text-slate-600 hover:text-slate-900 text-xs font-medium transition">
+              Reject
+            </button>
+            <button class="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-gov-primary hover:bg-gov-primaryHover text-white text-xs font-semibold rounded shadow-xs transition">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"></path></svg>
+              Review & Publish
+            </button>
+          </div>
+        </div>
+
+      </section>
+
+    </div>
+
+    <!-- ========================================================================= -->
+    <!-- COLLAPSIBLE AI AGENTDOCK (Floating Bottom Dock) -->
+    <!-- ========================================================================= -->
+    <div class="fixed bottom-3 right-6 w-96 bg-white border border-indigo-200 rounded-lg shadow-xl z-50 overflow-hidden text-xs">
+      <!-- Dock Header -->
+      <div class="bg-gradient-to-r from-slate-900 to-indigo-950 px-3.5 py-2 flex items-center justify-between text-white select-none">
+        <div class="flex items-center gap-2">
+          <div class="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></div>
+          <span class="font-semibold text-xs tracking-tight">AgentDock · Ontology Copilot</span>
+          <span class="text-[9px] font-mono bg-indigo-500/40 text-indigo-200 px-1 py-0.2 rounded border border-indigo-400/30">Claude-3.5-Gov</span>
+        </div>
+        <div class="flex items-center gap-1">
+          <button class="p-1 text-slate-400 hover:text-white rounded" title="Minimize">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+          </button>
+          <button class="p-1 text-slate-400 hover:text-white rounded" title="Close">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"></path></svg>
+          </button>
+        </div>
+      </div>
+
+      <!-- Dock Body Prompt Area -->
+      <div class="p-3 bg-slate-50/90 space-y-2.5">
+        <div class="p-2 rounded bg-indigo-50/70 border border-indigo-100 text-slate-700 text-[11px] leading-relaxed">
+          <div class="font-semibold text-indigo-950 flex items-center gap-1 mb-1">
+            <svg class="w-3.5 h-3.5 text-indigo-600" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"></path></svg>
+            Active Observation:
+          </div>
+          Evaluating <code class="font-mono font-medium text-gov-primary">sales.metric.return_rate</code>: The AST ratio lacks time-partition pinning for Fiscal Q4. Would you like me to auto-inject <code class="font-mono text-indigo-800">dim.calendar.fiscal_qtr</code> filter constraint?
+        </div>
+
+        <!-- Quick Action Chips -->
+        <div class="flex items-center gap-1.5 flex-wrap">
+          <button class="px-2 py-1 bg-white hover:bg-indigo-50 border border-slate-200 hover:border-indigo-300 rounded text-[10.5px] font-medium text-slate-700 transition">
+            Auto-Inject Calendar Filter
+          </button>
+          <button class="px-2 py-1 bg-white hover:bg-indigo-50 border border-slate-200 hover:border-indigo-300 rounded text-[10.5px] font-medium text-slate-700 transition">
+            Explain Low Confidence
+          </button>
+        </div>
+
+        <!-- Input Bar -->
+        <div class="relative pt-1">
+          <input type="text" placeholder="Ask AgentDock about ontology verification..." class="w-full pl-3 pr-8 py-1.5 bg-white border border-slate-300 rounded text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-indigo-500 shadow-2xs">
+          <button class="absolute right-2 top-2.5 text-indigo-600 hover:text-indigo-800">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+          </button>
+        </div>
+      </div>
+    </div>
+
+  </main>
+
+</body>
+</html>

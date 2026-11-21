@@ -103,4 +103,22 @@ def grade_trial(case: dict[str, Any], result: dict[str, Any]) -> tuple[bool, lis
     if expected.get("supersonic_retired") and not outcome.get("supersonic_retired"):
         reasons.append("遗留 SuperSonicClient 尚未彻底移除")
 
+    if expected.get("ui_block_whitelisted") and not outcome.get("ui_block_whitelisted"):
+        reasons.append("声明式画布未通过 C7 白名单组件校验或缺少前端白名单渲染器")
+
+    if expected.get("evolution_staging_only") and not outcome.get("evolution_staging_only"):
+        reasons.append("演进链路未强制 Staging 隔离或未物理禁写 knowledge/articles/（违反 C9）")
+
+    if expected.get("lineage_governance_consumers") and not outcome.get("lineage_governance_consumers"):
+        reasons.append("血缘影响评估未投影下游治理消费方（指标/报告/质检规则）或未按权限过滤（column-lineage-e2e P3-1）")
+
+    if expected.get("rejection_suppressed") and not outcome.get("rejection_suppressed"):
+        reasons.append("演进提案驳回后未命中防重提抑制机制（违反 C9）")
+
+    if expected.get("requires_shadow_mode") and not outcome.get("shadow_mode_default"):
+        reasons.append("Agent 起草的 FlowSpec 未强制以 SHADOW 启动（违反 data-driven-ops-profile D5）")
+
+    if expected.get("requires_inconclusive_honesty") and not outcome.get("inconclusive_honest"):
+        reasons.append("决策轨迹归因未在证据不足时显式承认 INCONCLUSIVE（违反 C8）")
+
     return len(reasons) == 0, reasons

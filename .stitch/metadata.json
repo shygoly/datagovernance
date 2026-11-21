@@ -1,0 +1,23 @@
+{
+  "projectId": "11098249588614711136",
+  "title": "DataGovernance Console — Governed Precision",
+  "designSystem": {
+    "name": "assets/6101735124834969286",
+    "displayName": "Governed Precision — DataGovernance Console",
+    "colorMode": "LIGHT",
+    "primaryColor": "#2456B8",
+    "neutralColor": "#F7F8FA",
+    "headlineFont": "GEIST",
+    "bodyFont": "GEIST",
+    "roundness": "ROUND_EIGHT"
+  },
+  "screens": [
+    {
+      "id": "e14672dca9424a27b89a7191f8a51604",
+      "title": "Semantic Ontology & 6D Metric Governance Workbench",
+      "deviceType": "DESKTOP",
+      "screenshotPath": ".stitch/designs/semantic-ontology-workbench.png",
+      "htmlPath": ".stitch/designs/semantic-ontology-workbench.html"
+    }
+  ]
+}

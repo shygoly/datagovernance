@@ -39,4 +39,9 @@ public record ApiResponse<T>(
     public static <T> ApiResponse<T> fail(String code, String message, String traceId) {
         return new ApiResponse<>(false, code, message, null, traceId, Instant.now());
     }
+
+    /** 失败且附带结构化负载（如 CompileReject）。 */
+    public static <T> ApiResponse<T> fail(String code, String message, T data, String traceId) {
+        return new ApiResponse<>(false, code, message, data, traceId, Instant.now());
+    }
 }

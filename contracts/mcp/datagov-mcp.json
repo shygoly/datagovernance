@@ -29,19 +29,97 @@
       "name": "list_dimensions",
       "readOnly": true,
       "requiredPermissions": ["metadata:semantic:read", "insight:ask"],
-      "description": "按模型列出已登记的规范维度对象（canonical ID + 类型 + 描述），供 LLM 接地选 ID 而非拼写裸字符串"
+      "description": "按模型列出已登记的规范维度对象（canonical ID + 类型 + 描述），供 LLM 接地选 ID 而非拼写裸字符串",
+      "outputFields": ["code", "name", "objectType"]
     },
     {
       "name": "list_metrics",
       "readOnly": true,
       "requiredPermissions": ["metadata:semantic:read", "insight:ask"],
-      "description": "按模型列出已登记的规范度量对象（canonical ID + 类型 + 六维摘要），供 LLM 接地选 ID"
+      "description": "按模型列出已登记的规范度量对象（canonical ID + 类型 + 六维摘要 + allowedDimensions/allowedGrains），供 LLM 接地选 ID",
+      "outputFields": ["code", "name", "metricType", "allowedDimensions", "allowedGrains", "requiresStandard", "verified", "productionReady"]
+    },
+    {
+      "name": "get_catalog_grammar",
+      "readOnly": true,
+      "requiredPermissions": ["metadata:semantic:read", "insight:ask"],
+      "description": "一次拉取 ACL 裁剪后的 Catalog Grammar（metrics+constraints、dimensions、filterOps、atModifiers）；生产默认仅 verified 度量",
+      "parameters": {
+        "productionOnly": { "type": "boolean", "default": true }
+      }
+    },
+    {
+      "name": "compile_and_validate",
+      "readOnly": true,
+      "requiredPermissions": ["insight:ask"],
+      "description": "SMQ 干跑：编译为规范化 SQL 或返回类型化 CompileReject（error_code/allowed/repair_hint），不执行查询"
     },
     {
       "name": "resolve_ref",
       "readOnly": true,
       "requiredPermissions": ["metadata:semantic:read", "insight:ask"],
       "description": "在当前模型命名空间解析短名引用，返回规范 ID 或 UNRESOLVED_REF/AMBIGUOUS_REF 候选列表"
+    },
+    {
+      "name": "profile_dataset_quality",
+      "readOnly": true,
+      "requiredPermissions": ["metadata:quality:read"],
+      "description": "执行五维确定性数据质量剖析（空值率、单位/枚举异构、码表漂移、时间倒挂、阈值离群），样本不足返回 INCONCLUSIVE"
+    },
+    {
+      "name": "list_evolution_proposals",
+      "readOnly": true,
+      "requiredPermissions": ["governance:knowledge:read"],
+      "description": "查询受控自演进 Staging 暂存区提案（PROPOSED/APPROVED/REJECTED），用于宿主白名单 RuleDiffProposalCard 预览"
+    },
+    {
+      "name": "align_treatment_anchors",
+      "readOnly": true,
+      "requiredPermissions": ["metadata:quality:read"],
+      "description": "对输入锚点/候选事件行执行多程切分与 T0 窗口对齐（MATCHED/AMBIGUOUS/MISSING），禁止 LLM 心算归因"
+    },
+    {
+      "name": "run_hcc_clinical_qc",
+      "readOnly": true,
+      "requiredPermissions": ["metadata:quality:read"],
+      "description": "运行 STD_CHANCE_HCC_QC_V1 专病质控（CNLC 自洽、时序倒挂、径线单位混用）"
+    },
+    {
+      "name": "list_clinical_qc_findings",
+      "readOnly": true,
+      "requiredPermissions": ["metadata:quality:read"],
+      "description": "查询临床质控发现列表（OPEN/RESOLVED）"
+    },
+    {
+      "name": "lineage_trace_column",
+      "readOnly": true,
+      "requiredPermissions": ["metadata:lineage:read"],
+      "description": "字段级血缘溯源（上游/下游）；按发起人 userId+workspaceId 实时鉴权并逐跳 ACL 截断（受限资产以占位返回），证据不足返回 INCONCLUSIVE（C5/C8）"
+    },
+    {
+      "name": "lineage_impact_analysis",
+      "readOnly": true,
+      "requiredPermissions": ["metadata:lineage:read"],
+      "description": "字段/数据集变更影响评估：下游表与字段，以及依赖它们的指标、分析报告、质检规则；逐跳 ACL，无下游证据返回 INCONCLUSIVE 而非“无影响”（C5/C8）"
+    },
+    {
+      "name": "suggest_field_mappings",
+      "readOnly": false,
+      "requiredPermissions": ["governance:knowledge:review"],
+      "description": "基于脱敏字段画像生成字段→本体映射建议并写入 PROPOSED 收件箱；不自动生效"
+    },
+    {
+      "name": "list_mapping_proposals",
+      "readOnly": true,
+      "requiredPermissions": ["governance:knowledge:read"],
+      "description": "查询映射建议收件箱（PROPOSED/APPROVED/REJECTED）"
+    },
+    {
+      "name": "submit_mapping_decision",
+      "readOnly": false,
+      "hostConsentRequired": true,
+      "requiredPermissions": ["governance:knowledge:review"],
+      "description": "对映射建议执行 approve/reject（经提案 API，不直写生产语义映射）"
     },
     {
       "name": "propose_local_onboarding",

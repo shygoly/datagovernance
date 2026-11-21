@@ -5,6 +5,7 @@ import { useRouter } from 'vue-router'
 import { inboxApi } from '@/api/governance'
 import { confirmAction } from '@/utils/confirm'
 import { semanticApi } from '@/api/semantic'
+import { mappingProposalApi } from '@/api/mappingProposal'
 import { usePageRefresh } from '@/composables/usePageRefresh'
 import { useAuthStore } from '@/stores/auth'
 import type { InboxItem, InboxSourceType } from '@/types/governance'
@@ -38,19 +39,25 @@ const canExecution = computed(() => auth.hasPermission('runtime:execution:read')
 const canAlert = computed(() => auth.hasPermission('governance:alert:read'))
 const canSensitivity = computed(() => auth.hasPermission('metadata:sensitivity:read'))
 const canSemantic = computed(() => auth.hasPermission('metadata:semantic:read'))
+const canMapping = computed(() => auth.hasPermission('governance:knowledge:read'))
 const canManage = computed(() => auth.hasPermission('governance:inbox:manage'))
 const pendingSemanticProposals = ref(0)
+const pendingMappingProposals = ref(0)
 
 const sourceOptions = computed(() => [
   { value: 'EXECUTION', label: '失败执行', show: canExecution.value },
   { value: 'ALERT', label: '未处理告警', show: canAlert.value },
   { value: 'SENSITIVITY', label: '待复核敏感', show: canSensitivity.value },
+  { value: 'AUTONOMY', label: '自治流程异常', show: auth.hasPermission('autonomy:trace:read') },
+  { value: 'AUTONOMY_APPROVAL', label: '自治待审批', show: auth.hasPermission('autonomy:flow:approve') },
 ].filter((item) => item.show))
 
 const sourceMeta: Record<InboxSourceType, { label: string; type: 'danger' | 'warning' | 'info' }> = {
   EXECUTION: { label: '失败执行', type: 'danger' },
   ALERT: { label: '告警', type: 'warning' },
   SENSITIVITY: { label: '敏感', type: 'info' },
+  AUTONOMY: { label: '自治异常', type: 'danger' },
+  AUTONOMY_APPROVAL: { label: '自治审批', type: 'warning' },
 }
 
 const severityMeta: Record<string, { label: string; type: 'danger' | 'warning' | 'info' }> = {
@@ -95,6 +102,11 @@ async function load() {
       semanticApi.listProposals('PROPOSED')
         .then((list) => { pendingSemanticProposals.value = list.length })
         .catch(() => { pendingSemanticProposals.value = 0 })
+    }
+    if (canMapping.value) {
+      mappingProposalApi.list('PROPOSED')
+        .then((list) => { pendingMappingProposals.value = list.length })
+        .catch(() => { pendingMappingProposals.value = 0 })
     }
   } catch {
     rows.value = []
@@ -262,6 +274,27 @@ onBeforeUnmount(() => {
             @click="router.push({ path: '/metadata/semantic', query: { tab: 'proposals' } })"
           >
             前往审校
+          </el-button>
+        </template>
+      </el-alert>
+
+      <el-alert
+        v-if="pendingMappingProposals > 0"
+        type="warning"
+        show-icon
+        :closable="false"
+        style="margin-bottom: var(--dg-space-md)"
+      >
+        <template #title>
+          有 {{ pendingMappingProposals }} 条待审字段→本体映射建议（PROPOSED）
+          <el-button
+            link
+            type="primary"
+            size="small"
+            style="margin-left: 8px"
+            @click="router.push('/governance/mapping-proposals')"
+          >
+            打开映射收件箱
           </el-button>
         </template>
       </el-alert>

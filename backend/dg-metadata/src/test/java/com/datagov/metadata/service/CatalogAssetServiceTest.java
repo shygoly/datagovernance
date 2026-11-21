@@ -17,6 +17,7 @@ import com.datagov.data.spi.catalog.CatalogAssets;
 import com.datagov.data.spi.catalog.CatalogModel.TableKind;
 import com.datagov.data.spi.catalog.CatalogGateway;
 import com.datagov.data.spi.catalog.CatalogPath;
+import com.datagov.metadata.service.lineage.SqlLineageService;
 import com.datagov.data.spi.catalog.CanonicalType;
 import com.datagov.metadata.domain.DataSourceStatus;
 import com.datagov.metadata.entity.CatalogAssetEntities.CatalogColumn;
@@ -267,6 +268,68 @@ class CatalogAssetServiceTest {
             verify(schemaVersionMapper).insert(any(CatalogSchemaVersion.class));
             verify(runMapper).insert(any(CatalogSnapshotRun.class));
             verify(runMapper).updateById(any(CatalogSnapshotRun.class));
+        }
+
+        @Test
+        @DisplayName("视图带定义 → 触发列级血缘采集(jobType=VIEW 由 SqlLineageService 负责)；表不触发")
+        void viewWithDefinitionTriggersLineage() {
+            SqlLineageService lineage = mock(SqlLineageService.class);
+            service.setSqlLineageService(lineage);
+            stubMysqlRefresh(List.of(
+                    new TableInfo("v_user", TableKind.VIEW, null, null, null, null,
+                            "SELECT id FROM oa_user"),
+                    new TableInfo("oa_user", TableKind.TABLE, null, null, null, null,
+                            "SELECT should_be_ignored")));
+
+            RefreshResult result = service.refresh("cat_1");
+
+            assertThat(result.status()).isEqualTo("SUCCESS");
+            org.mockito.Mockito.verify(lineage, times(1)).recordView(any(), eq("ecology.v_user"),
+                    eq("v_user"), eq("SELECT id FROM oa_user"), eq("ds_1"), eq("ecology"), any());
+            org.mockito.Mockito.verifyNoMoreInteractions(lineage);
+        }
+
+        @Test
+        @DisplayName("视图没有定义(连接器取不到) → 不触发血缘")
+        void viewWithoutDefinitionSkipsLineage() {
+            SqlLineageService lineage = mock(SqlLineageService.class);
+            service.setSqlLineageService(lineage);
+            stubMysqlRefresh(List.of(new TableInfo("v_user", TableKind.VIEW, null, null, null, null)));
+
+            service.refresh("cat_1");
+
+            org.mockito.Mockito.verifyNoInteractions(lineage);
+        }
+
+        @Test
+        @DisplayName("视图血缘抛异常也不影响目录采集结果")
+        void lineageFailureDoesNotBreakRefresh() {
+            SqlLineageService lineage = mock(SqlLineageService.class);
+            when(lineage.recordView(any(), any(), any(), any(), any(), any(), any()))
+                    .thenThrow(new IllegalStateException("boom"));
+            service.setSqlLineageService(lineage);
+            stubMysqlRefresh(List.of(new TableInfo("v_user", TableKind.VIEW, null, null, null, null,
+                    "SELECT id FROM oa_user")));
+
+            RefreshResult result = service.refresh("cat_1");
+
+            assertThat(result.status()).isEqualTo("SUCCESS");
+            assertThat(result.datasets()).isEqualTo(1);
+        }
+
+        private void stubMysqlRefresh(List<TableInfo> tables) {
+            when(sourceMapper.selectOne(any())).thenReturn(source());
+            when(dataSourceService.requireInWorkspace("ds_1")).thenReturn(mysqlDataSource());
+            when(gateway.capabilities(DataSourceType.MYSQL))
+                    .thenReturn(ConnectorCapabilities.relationalWithoutSchema());
+            when(gateway.browse(eq(DataSourceType.MYSQL), any(), any(CatalogPath.class)))
+                    .thenAnswer(invocation -> {
+                        CatalogPath path = invocation.getArgument(2);
+                        return path.level() == CatalogPath.Level.DATABASE
+                                ? CatalogPage.ofTables(tables) : catalogPage(path);
+                    });
+            when(namespaceMapper.selectOne(any())).thenReturn(null);
+            when(datasetMapper.selectOne(any())).thenReturn(null);
         }
 
         @Test

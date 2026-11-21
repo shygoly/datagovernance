@@ -121,6 +121,82 @@ export const semanticApi = {
   compileSemantic(spec: SemanticQuerySpec) {
     return http.post<CompiledSemanticQuery>('/insight/semantic/compile', spec)
   },
+
+  /** SMQ 干跑：成功返回 compiled；失败返回类型化 CompileReject（由后端 200+ok 封装时走 Agent 端点） */
+  compileAndValidate(spec: SemanticQuerySpec) {
+    return http.post<{
+      ok: boolean
+      reject?: {
+        errorCode: string
+        message: string
+        location?: string
+        allowed?: string[]
+        repairHint?: string
+      } | null
+      compiled?: CompiledSemanticQuery | null
+    }>('/insight/semantic/compile-and-validate', spec)
+  },
+  exportYaml(mode: 'short' | 'full' = 'short') {
+    return http.get<{ mode: string; yaml: string }>('/metadata/semantic/yaml/export', { mode })
+  },
+  importYamlPreview(content: string) {
+    return http.post<{ metricCount: number; resolvedRefs: Record<string, string>; warnings: string[] }>(
+      '/metadata/semantic/yaml/import',
+      { content },
+    )
+  },
+  resolveRef(shortName: string) {
+    return http.get<{
+      status: string
+      shortName: string
+      canonicalId?: string | null
+      canonicalCode?: string | null
+      candidates: Array<{ id: string; code: string; name: string; objectType: string; editDistance: number }>
+    }>('/metadata/semantic/resolve-ref', { shortName })
+  },
+  verifyObject(id: string) {
+    return http.post<{ objectId: string; status: string; messages: string[] }>(
+      `/metadata/semantic/objects/${id}/verify`,
+      {},
+    )
+  },
+  falsifyObject(
+    id: string,
+    body: {
+      dataSourceId: string
+      parentTable: string
+      parentPk: string
+      childTable: string
+      childPk: string
+      childFk: string
+      fkMatchThreshold?: number
+    },
+  ) {
+    return http.post<{
+      objectId: string
+      status: string
+      assertions: Array<{ id: string; assertion: string; passed: boolean; observed: string; detail: string }>
+      lowConfidenceFields: string[]
+      verified: Record<string, unknown>
+    }>(`/metadata/semantic/objects/${id}/falsify`, body)
+  },
+  planProbes(id: string, params?: { metricCode?: string; dimensionCode?: string }) {
+    const qs = new URLSearchParams()
+    if (params?.metricCode) qs.set('metricCode', params.metricCode)
+    if (params?.dimensionCode) qs.set('dimensionCode', params.dimensionCode)
+    const q = qs.toString()
+    return http.post<{
+      objectId: string
+      status: string
+      probes: Array<Record<string, unknown>>
+      verified: Record<string, unknown>
+    }>(`/metadata/semantic/objects/${id}/plan-probes${q ? `?${q}` : ''}`, {})
+  },
+  deleteImpact(id: string) {
+    return http.get<{ objectId: string; deletable: boolean; referrerObjectIds: string[] }>(
+      `/metadata/semantic/objects/${id}/delete-impact`,
+    )
+  },
   listWarehouses() {
     return http.get<WorkspaceWarehouse[]>('/metadata/semantic/warehouses')
   },

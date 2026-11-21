@@ -1,5 +1,28 @@
-/* 全局基础样式。刻意保持极少 —— Element Plus 已经提供了完整的视觉体系,
-   在它之上叠一层自定义样式只会让后续升级变成一场考古。 */
+/* 全局基础样式与 Element Plus 语义映射。
+   视觉值唯一真相在 tokens.css，此处仅做轻量映射与通用布局工具类。 */
+
+:root {
+  --el-color-primary: var(--dg-primary);
+  --el-color-primary-dark-2: var(--dg-primary-hover);
+  --el-color-primary-light-9: var(--dg-primary-soft);
+  --el-color-success: var(--dg-success);
+  --el-color-success-light-9: var(--dg-success-soft);
+  --el-color-warning: var(--dg-warning);
+  --el-color-warning-light-9: var(--dg-warning-soft);
+  --el-color-danger: var(--dg-danger);
+  --el-color-danger-light-9: var(--dg-danger-soft);
+  --el-color-info: var(--dg-info);
+  --el-color-info-light-9: var(--dg-info-soft);
+  --el-bg-color-page: var(--dg-canvas);
+  --el-bg-color: var(--dg-surface);
+  --el-text-color-primary: var(--dg-text);
+  --el-text-color-regular: var(--dg-text-secondary);
+  --el-text-color-secondary: var(--dg-text-muted);
+  --el-border-color: var(--dg-border);
+  --el-border-color-light: var(--dg-border);
+  --el-border-radius-base: var(--dg-radius);
+  --el-font-family: var(--dg-font-sans);
+}
 
 html,
 body,
@@ -13,6 +36,12 @@ body {
   font-family: var(--dg-font-sans);
   background-color: var(--dg-canvas);
   color: var(--dg-text);
+  -webkit-font-smoothing: antialiased;
+}
+
+.tabular-nums {
+  font-family: var(--dg-font-mono);
+  font-variant-numeric: tabular-nums;
 }
 
 /* 页面内容区的统一留白,让各视图不必各自定义 */

@@ -34,8 +34,20 @@
 | Metric 6D Spec | 度量定义的六维正交契约：可加性（`additive`/`semi_additive`/`non_additive` + `window_groupings`）、LOD、过滤交互、时间日历、多态组合、图拓扑局部性（实体键与基数） | 不是扁平 SQL 字符串表达式 |
 | Metric Provenance | 语义字段级证据与责任契约：`db_constraint > knowledge_graph > historical_sql > llm_inference`；LLM 仅做候选起草与证据收集，`llm_inference` 强制 `requires_human_review`，安全/租户/RLS 字段禁 LLM 参与 | 不是信任 LLM 自评置信度 |
 | Ontology Graph Gate | 基于对象图的五道硬闸门（G1 Schema / G2 引用完整性 / G3 类型匹配 / G4 DAG 无环 / G5 `content_digest` 变更传播标 `STALE_REVIEW`）与删除保护 | 不是文本正则或弱警告 |
-| Falsification Probe | 度量生效前三重/四层确定性裁判：静态图闸门（③a）+ 物理表统计证伪（③b PK/NDV/FK）+ DuckDB 6 类探针 SMQ（③c 扇出/可加性/半加性/NULL 裂变/除零/量级）+ 反模式检测（③d），常驻 CI | 不是依赖语法不报错即放行 |
-| Query Gateway | 平台 `/api/v1/insight/*`，由原生 `NativeInsightEngine` + `MultiWarehouseQueryCompiler` 驱动，支持 `SINGLE_ROUTE`、`COHORT_UNION`（两阶段统计合并）与 `ENTITY_FEDERATED_JOIN`（StarRocks External Catalog / 嵌入式 DuckDB） | 不是直接 SQL 客户端或 SuperSonic 代理 |
+| Falsification Probe | 度量生效前四层确定性裁判：静态图闸门（③a）+ 物理表统计证伪（③b PK/NDV/FK）+ 探针 SMQ（③c，**PG 优先夹具**；联邦场景可辅以嵌入式 DuckDB）+ 反模式检测（③d），常驻 CI | 不是依赖语法不报错即放行；不是生产问数执行引擎 |
+| SMQ (`SemanticQuerySpec`) | LLM/API 与确定性编译器之间的**唯一**结构化问数 IR（metrics/dimensions/filters/time/grain/`at_modifiers`…）；代码类型可保留 `SemanticQuerySpec` 别名 | 不含表名/列名/JOIN/GROUP BY/裸 SQL；不是临床队列定义 |
+| Catalog Grammar | 从 PUBLISHED 对象图按 `UserContext` 实时 ACL 裁剪后的可枚举目录约束投影（允许维度/grain/修饰符等） | 不是全量元数据 dump；不是 retrieve-then-filter |
+| SemanticGate | 单仓 / 多仓 / 联邦三条路径**共用**的语义门禁：允许维度与时间窗、`defaultFilters`、`EXCLUDES`、数据 ACL、截断策略与审计必填字段 | 不是某一编译 Mode 的私有宽松分支 |
+| CompileReject | 类型化编译拒绝：`error_code` + `location` + `allowed` + `repair_hint`（供 Agent 局部修复） | 不是单一自由文本 `MTD_SEMANTIC_COMPILE_FAILED` |
+| reproducibility_fingerprint | C8 可复现审计指纹结构：数据快照、语义对象/Standard 版本、算子或 SQL 摘要、gateDigest、委派链、截断元数据（见 `docs/analysis-report.md` §10） | 不是仅 SQL 字符串 hash；Insight / Stats / 报表快照共用 schema |
+| CohortSpec / CriterionNode | 临床/分析队列：锚点事件、相对时间窗、可审校条件树（AND/OR/EXISTS/序列/FIRST/LAST…） | 不是 SMQ 过滤字段；禁止内嵌裸 SQL |
+| ClinicalOperator / ClinicalStatsRuntime | 版本化确定性评分与统计算子及其沙箱执行面（SOFA/生存/回归/PSM 等） | 不是 `SemanticQueryCompiler` 字符串分支；禁止 LLM 心算（C3） |
+| AnchorEvent / AlignToAnchor | 以实际治疗完成时间 \(T_0\) 为锚的事件模型与窗口对齐算子（基线/随访 MATCHED·AMBIGUOUS·MISSING） | 不是自由文本时间叙述；不硬编码行业物理表名 |
+| TreatmentCycleSplit | 同患者多 \(T_0\) 按时间切分程次并输出稳定 `session_seq` | 不是「取最近一次治疗」启发式 |
+| ClinicalQcFinding | 专病 RuleSpec 命中的可审计质控发现（Blocker/Warning）与宿主确认复检 | 不是聊天里口头关闭异常 |
+| MappingProposal | 字段→业务本体映射建议工单（PROPOSED→APPROVED/REJECTED）与驳回指纹防重提 | 不是聊天口头映射；不自动晋升生产语义映射 |
+| OperationalReport | 参数化运营报表：复合块、快照、PDF/Excel、版本回滚、定时分发 | 不是 `AnalysisReport`（解释结论对象） |
+| Query Gateway | 平台 `/api/v1/insight/*`，由原生 `NativeInsightEngine` + `SemanticGate` + `MultiWarehouseQueryCompiler` 驱动，支持 `SINGLE_ROUTE`、`COHORT_UNION`（两阶段统计合并）与 `ENTITY_FEDERATED_JOIN`（StarRocks External Catalog / 嵌入式 DuckDB） | 不是直接 SQL 客户端或 SuperSonic 代理 |
 | Design Token | 前端颜色/间距/字体等稳定变量，`var(--dg-*)` | 不是 Element Plus 内部变量 |
 | Constitution | 仓库根级不可妥协公理与安全红线（`CONSTITUTION.md`） | 不是普通设计建议 |
 | Agent Substrate (A0) | 跨 Agent 复用的认知与演进基座：分层记忆、Skill、受控自演进、轨迹评测 | 不是第 9 个业务 Space |
@@ -109,19 +121,17 @@ Browser
 
 ## 5. 关键数据流
 
-### 5.1 问数
+### 5.1 问数（SMQ + 统一 SemanticGate）
 
 ```text
-用户问题
-  → /api/v1/insight/ask
-  → 平台身份 + workspace + insight:ask
-  → NativeInsightEngine
-        ├─ SemanticOntologyService.searchSubgraph（逐跳 ACL 语义子图召回）
-        ├─ SemanticValueLinkingService（L1/L2 值对齐 + 确定性相对时间归一化）
-        └─ SemanticQueryCompiler（C2 Standard 闸门 + Join/防扇出 CTE + 只读护栏）
-  → DataAccessGateway → StarRocks / PostgreSQL
-  → 平台按 md_column_sensitivity 兜底脱敏 + 临时 Grant 放行
-  → ig_query_log + gv_audit_record + SHA-256 审计指纹
+用户问题 / Agent 工具
+  → Catalog Grammar（ACL 裁剪目录）→ 组装 SMQ（SemanticQuerySpec）
+  → compile_and_validate / execute
+  → SemanticGate（单仓·多仓·联邦共用：允许维/时间窗/defaultFilters/EXCLUDES/ACL/截断）
+        → 失败：CompileReject（error_code + allowed + repair_hint）
+        → 成功：SemanticQueryCompiler / MultiWarehouseQueryCompiler
+  → DataAccessGateway / FederatedQueryGateway → PostgreSQL / StarRocks（联邦兜底 DuckDB）
+  → 脱敏 + ig_query_log / gv_audit_record + reproducibility_fingerprint
 ```
 
 ### 5.2 目录/血缘/敏感
@@ -137,13 +147,47 @@ SQL/作业 → LineageService → md_lineage_* → 影响分析
 ```text
 MCP 接地选 ID（list_dimensions / list_metrics / resolve_ref）
   → LLM 起草带 Provenance 的六维 YAML 投影（禁止触碰安全/租户/RLS 字段）
-  → Ontology Graph 导入流水线（短名/显式 ref 解析 + G1–G4 图闸门 + ③d 反模式检测）
-  → ③b 物理表统计证伪（经 DataAccessGateway 校验 PK/NDV/FK，FAIL 降级 LOW_CONFIDENCE）
-  → ③c DuckDB 探针查询（扇出 / 可加性 / 半加性 / NULL / 除零 / 量级，常驻 CI）
-  → 宿主独立审校签署（PROPOSED / STALE_REVIEW → PUBLISHED + 不可变 content_digest）
+  → Ontology Graph 导入（短名/显式 ref + G1–G5 + 删除保护 + ③d 反模式）
+  → ③b 物理表统计证伪（PK/NDV/FK；FAIL → LOW_CONFIDENCE）
+  → ③c 探针 SMQ（PG 优先夹具；扇出/可加性/半加性/NULL/除零/量级）
+  → 宿主审校（PROPOSED / STALE_REVIEW → PUBLISHED + content_digest）
+  ※ 图闸门必须先于六维运算接通编译器（openspec: metric-6d + analysis-hardening W2）
 ```
 
-## 6. 变更协议
+### 5.4 临床队列、确定性统计与运营报表（与 SMQ 解耦）
+
+```text
+CohortSpec / CriterionNode → CohortCompiler → 平台内成员集物化
+ClinicalOperator → ClinicalStatsRuntime（沙箱；禁止嵌入 SemanticQueryCompiler）
+        → 输出表/标量 + operatorDigest → 可被 METRIC/SMQ 引用
+OperationalReport（参数·复合块·快照·PDF/Excel·定时分发）
+        → 块分派：SMQ | Cohort | Stats | 静态 Markdown
+        → 每块经 SemanticGate；整单绑定 reproducibility_fingerprint
+AnalysisReport 仍为「解释结论」对象，与 OperationalReport 双轨并存
+```
+
+## 6. Data-Driven Ops Profile（数据自治领域包）
+
+`data-driven-ops-profile` 不新增 P10/P11 元原语，而是把自治能力挂载到既有 P1–P9 + A0：
+
+| 组件 | 槽位 | Space | 稳定契约 |
+|---|---|---|---|
+| `Target` / `ActionType`（Layer 3） | P2 Context + P7 Security | metadata | `md_semantic_object`（object_type=TARGET/ACTION_TYPE），发布后不可变快照 |
+| `FilterPreset` | P2 Context | metadata | `au_filter_preset`，只存声明式条件 |
+| `TriggerSpec` / `FlowSpec IR` / `FlowCompiler` / `Arbiter` | P4 Flow + P8 Verify | control | `flow.ir/v1` + `au_flow_def/version` + `au_trigger_def` |
+| `DurableFlowEngine` / 原子 Activity / 实体锁冷却 | P4 Flow + P5 Protocol | runtime | `au_flow_instance` + `au_entity_lock_cooldown`；SPI 可替换 Temporal/Restate |
+| `DecisionTrace` / `ShadowEvaluator` / Kill Switch | P9 Observe + P7 Security | governance | `au_decision_trace` 不可变证据链 + T+1 回检 |
+| 归因建议 / IR 草案 | A0 Agent 基座 | agent-service | 只读归因 + 受 JSON Schema 约束的草案，必须经 FlowCompiler |
+
+硬纪律：
+
+1. 新建或变更 FlowSpec 一律以 `SHADOW` 启动，`SHADOW → L2_ASSISTED → L1_AUTO` 不可跳级；
+2. 硬不变量、参数包络、`domainScope`（C6）、配对补偿与冷却期全部在 `FlowCompiler` 编译期拦截；
+3. L2/L3 审批复用 V32 `ig_agent_action_proposal` + 宿主确认，不造第二套审批入口；
+4. 回检缺少观测数据必须落 `INCONCLUSIVE`，不得把缺失当 0（C8）；
+5. 所有自治表启用 `workspace_id` + PostgreSQL RLS；Trace 只存聚合指标，不落行内容（C5）。
+
+## 7. 变更协议
 
 1. 新术语先加到 §1；
 2. 新模块/依赖先更新 §3，并确保 Maven 依赖不产生环；

@@ -5,9 +5,15 @@ import com.datagov.data.connector.mapping.TypeMappers;
 import com.datagov.data.spi.ConnectionConfig;
 import com.datagov.data.spi.ConnectorCapabilities;
 import com.datagov.data.spi.DataSourceType;
+import com.datagov.data.spi.catalog.CatalogModel.TableKind;
 import com.datagov.data.spi.catalog.CatalogPath;
 import org.springframework.stereotype.Component;
 
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Statement;
 import java.util.Properties;
 import java.util.Set;
 
@@ -92,5 +98,62 @@ public class DorisConnector extends AbstractJdbcConnector {
     @Override
     protected String metadataSchema(ConnectionConfig config, CatalogPath path) {
         return null;
+    }
+
+    /**
+     * Doris / StarRocks：逻辑视图在 information_schema.VIEWS；异步/rollup 物化视图走 SHOW CREATE。
+     */
+    @Override
+    protected String readViewDefinition(Connection connection, String catalog, String schema,
+                                        String viewName, TableKind kind) throws SQLException {
+        String sql = "SELECT VIEW_DEFINITION FROM information_schema.VIEWS "
+                + "WHERE TABLE_SCHEMA = COALESCE(?, DATABASE()) AND TABLE_NAME = ?";
+        try (PreparedStatement ps = connection.prepareStatement(sql)) {
+            ps.setString(1, catalog);
+            ps.setString(2, viewName);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    String definition = rs.getString(1);
+                    if (definition != null && !definition.isBlank()) {
+                        return definition;
+                    }
+                }
+            }
+        }
+        if (kind == TableKind.MATERIALIZED_VIEW) {
+            return showCreateMaterializedView(connection, catalog, viewName);
+        }
+        return null;
+    }
+
+    private static String showCreateMaterializedView(Connection connection, String catalog,
+                                                     String viewName) throws SQLException {
+        String safeView = quoteMySqlIdentifier(viewName);
+        String stmt = catalog == null || catalog.isBlank()
+                ? "SHOW CREATE MATERIALIZED VIEW " + safeView
+                : "SHOW CREATE MATERIALIZED VIEW " + safeView + " FROM " + quoteMySqlIdentifier(catalog);
+        try (Statement st = connection.createStatement();
+             ResultSet rs = st.executeQuery(stmt)) {
+            if (!rs.next()) {
+                return null;
+            }
+            int columns = rs.getMetaData().getColumnCount();
+            for (int i = 1; i <= columns; i++) {
+                String value = rs.getString(i);
+                if (value != null && value.toUpperCase().contains("CREATE")) {
+                    return value;
+                }
+            }
+            return columns >= 2 ? rs.getString(2) : rs.getString(1);
+        } catch (SQLException ex) {
+            if (ex.getErrorCode() == 1146 || ex.getErrorCode() == 1064) {
+                return null;
+            }
+            throw ex;
+        }
+    }
+
+    private static String quoteMySqlIdentifier(String identifier) {
+        return "`" + identifier.replace("`", "``") + "`";
     }
 }

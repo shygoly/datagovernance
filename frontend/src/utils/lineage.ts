@@ -38,6 +38,40 @@ export function mergeLineageGraphs(graphs: LineageGraph[]): LineageGraph {
   }
 }
 
+/**
+ * 客户端兜底过滤 PLANNED / SUPERSEDED 边。
+ *
+ * 默认只展示已确认的血缘；includePlanned 打开时保留 PLANNED（预估）。
+ * 后端不支持 includePlanned 参数时，这里也能保证开关语义一致。
+ * 过滤边之后，没有任何边相连且不是中心的节点会被一并移除，避免图里出现孤点。
+ */
+export function filterLineageEdges(
+  graph: LineageGraph,
+  options: { includePlanned: boolean },
+  keepNodeId = '',
+): LineageGraph {
+  const edges = graph.edges.filter((edge) => {
+    const status = (edge.status || 'ACTIVE').toUpperCase()
+    if (status === 'SUPERSEDED') {
+      return false
+    }
+    return options.includePlanned || status !== 'PLANNED'
+  })
+  if (edges.length === graph.edges.length) {
+    return graph
+  }
+  const connected = new Set<string>()
+  for (const edge of edges) {
+    connected.add(edge.fromNodeId)
+    connected.add(edge.toNodeId)
+  }
+  return {
+    ...graph,
+    nodes: graph.nodes.filter((node) => connected.has(node.id) || node.id === keepNodeId),
+    edges,
+  }
+}
+
 function adjacencyOf(
   nodes: LineageNode[],
   edges: LineageEdge[],
@@ -129,6 +163,8 @@ export function buildImpactItems(graph: LineageGraph, rootId: string): ImpactIte
       displayName: node.displayName,
       catalogDatasetId: node.catalogDatasetId,
       catalogColumnId: node.catalogColumnId,
+      externalRefType: node.externalRefType,
+      externalRefId: node.externalRefId,
       edgeCount: graph.edges.filter(
         (edge) => edge.fromNodeId === node.id || edge.toNodeId === node.id,
       ).length,

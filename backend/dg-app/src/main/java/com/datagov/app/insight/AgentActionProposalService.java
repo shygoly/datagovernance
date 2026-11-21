@@ -52,6 +52,9 @@ public class AgentActionProposalService {
     public static final String ACTION_UPDATE_LOCAL_DATASOURCE = "UPDATE_LOCAL_DATASOURCE";
     public static final String ACTION_CREATE_PARQUET_CATALOG = "CREATE_PARQUET_CATALOG";
     public static final String ACTION_REFRESH_PARQUET_CATALOG = "REFRESH_PARQUET_CATALOG";
+    /** data-driven-ops-profile：L2/L3 自治动作的宿主确认提案。 */
+    public static final String ACTION_AUTONOMY_FLOW_APPROVAL = "AUTONOMY_FLOW_APPROVAL";
+    public static final String PERM_AUTONOMY_APPROVE = "autonomy:flow:approve";
 
     public static final String STATUS_PENDING = "PENDING";
     public static final String STATUS_EXECUTED = "EXECUTED";
@@ -64,6 +67,7 @@ public class AgentActionProposalService {
     private final AgentActionProposalMapper mapper;
     private final AgentControlPlaneService controlPlane;
     private final DataSourceService dataSourceService;
+    private AutonomyApprovalExecutor autonomyApprovalExecutor;
     private final CatalogAssetService catalogAssetService;
     private final WorkspaceService workspaceService;
     private final PermissionService permissionService;
@@ -86,6 +90,11 @@ public class AgentActionProposalService {
         this.permissionService = permissionService;
         this.auditService = auditService;
         this.objectMapper = objectMapper;
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    public void setAutonomyApprovalExecutor(AutonomyApprovalExecutor autonomyApprovalExecutor) {
+        this.autonomyApprovalExecutor = autonomyApprovalExecutor;
     }
 
     public record CreateProposalCommand(
@@ -255,6 +264,119 @@ public class AgentActionProposalService {
         return toView(proposal);
     }
 
+    /**
+     * L2 自治审批列表：跨用户可见，因为审批人不必是流程发起人。
+     * 权限在控制器与方法内双重校验，避免直接调服务绕过。
+     */
+    public List<ProposalView> listAutonomyPending() {
+        Caller caller = WorkspaceContext.require();
+        if (!caller.hasPermission(PERM_AUTONOMY_APPROVE)) {
+            throw new BizException(ErrorCode.PLT_FORBIDDEN, "缺少权限: " + PERM_AUTONOMY_APPROVE);
+        }
+        Instant now = Instant.now();
+        return mapper.selectList(new LambdaQueryWrapper<AgentActionProposal>()
+                        .eq(AgentActionProposal::getWorkspaceId, caller.workspaceId())
+                        .eq(AgentActionProposal::getActionType, ACTION_AUTONOMY_FLOW_APPROVAL)
+                        .eq(AgentActionProposal::getStatus, STATUS_PENDING)
+                        .orderByDesc(AgentActionProposal::getCreatedAt)
+                        .last("LIMIT 100"))
+                .stream()
+                .map(p -> expireIfNeeded(p, now))
+                .filter(p -> STATUS_PENDING.equals(p.getStatus()))
+                .map(this::toView)
+                .toList();
+    }
+
+    public ProposalView confirmAutonomyProposal(String proposalId, String expectedDigest, String note) {
+        Caller caller = WorkspaceContext.require();
+        if (!caller.hasPermission(PERM_AUTONOMY_APPROVE)) {
+            throw new BizException(ErrorCode.PLT_FORBIDDEN, "缺少权限: " + PERM_AUTONOMY_APPROVE);
+        }
+        AgentActionProposal proposal = loadWorkspaceProposal(proposalId, caller);
+        if (!ACTION_AUTONOMY_FLOW_APPROVAL.equals(proposal.getActionType())) {
+            throw new BizException(ErrorCode.GOV_PROPOSAL_STATE,
+                    "该提案不是自治流程审批，不能通过自治审批端点执行");
+        }
+        Instant now = Instant.now();
+        proposal = expireIfNeeded(proposal, now);
+        if (!STATUS_PENDING.equals(proposal.getStatus())) {
+            throw new BizException(ErrorCode.GOV_PROPOSAL_STATE,
+                    "提案当前状态为 " + proposal.getStatus() + "，不可重复确认或执行");
+        }
+        if (!blank(expectedDigest) && !expectedDigest.trim().equals(proposal.getPayloadDigest())) {
+            throw new BizException(ErrorCode.SYS_CONFLICT, "提案载荷摘要不匹配，拒绝执行");
+        }
+        workspaceService.requireAccess(caller.userId(), caller.workspaceId());
+        // Recheck at Execution：不能只信请求入口解析出的权限快照。
+        Set<String> livePermissions = permissionService.resolvePermissions(
+                caller.userId(), caller.workspaceId());
+        Caller liveCaller = new Caller(caller.userId(), caller.username(), caller.workspaceId(),
+                caller.platformAdmin(), livePermissions);
+        if (!liveCaller.hasPermission(PERM_AUTONOMY_APPROVE)) {
+            throw new BizException(ErrorCode.PLT_FORBIDDEN,
+                    "确认瞬间权限复核失败，缺少权限: " + PERM_AUTONOMY_APPROVE);
+        }
+        Map<String, Object> payload = parseJsonMap(proposal.getPayloadJson());
+        try {
+            Map<String, Object> execResult = executeAction(proposal.getActionType(), payload);
+            proposal.setStatus(STATUS_EXECUTED);
+            proposal.setResultJson(toCanonicalJson(execResult));
+            proposal.setDecidedBy(caller.userId());
+            proposal.setDecidedAt(now);
+            proposal.setDecisionNote(note);
+            proposal.setUpdatedAt(now);
+            mapper.updateById(proposal);
+            auditService.record(new AuditEntry(
+                    AuditService.EXECUTE, "AUTONOMY_APPROVAL", proposal.getId(), proposal.getTitle(),
+                    "GOVERNANCE", true, null,
+                    "审批人确认自治动作并唤醒流程：" + proposal.getSummary(), "autonomy-approval"));
+            return toView(proposal);
+        } catch (BizException ex) {
+            markFailed(proposal, caller.userId(), now, note, ex.getMessage());
+            throw ex;
+        } catch (Exception ex) {
+            markFailed(proposal, caller.userId(), now, note, ex.getMessage());
+            throw new BizException(ErrorCode.SYS_INTERNAL_ERROR, "执行自治审批失败: " + ex.getMessage());
+        }
+    }
+
+    public ProposalView rejectAutonomyProposal(String proposalId, String note) {
+        Caller caller = WorkspaceContext.require();
+        if (!caller.hasPermission(PERM_AUTONOMY_APPROVE)) {
+            throw new BizException(ErrorCode.PLT_FORBIDDEN, "缺少权限: " + PERM_AUTONOMY_APPROVE);
+        }
+        AgentActionProposal proposal = loadWorkspaceProposal(proposalId, caller);
+        if (!ACTION_AUTONOMY_FLOW_APPROVAL.equals(proposal.getActionType())) {
+            throw new BizException(ErrorCode.GOV_PROPOSAL_STATE,
+                    "该提案不是自治流程审批，不能通过自治审批端点拒绝");
+        }
+        Instant now = Instant.now();
+        proposal = expireIfNeeded(proposal, now);
+        if (!STATUS_PENDING.equals(proposal.getStatus())) {
+            throw new BizException(ErrorCode.GOV_PROPOSAL_STATE,
+                    "提案当前状态为 " + proposal.getStatus() + "，无法拒绝");
+        }
+        proposal.setStatus(STATUS_REJECTED);
+        proposal.setDecidedBy(caller.userId());
+        proposal.setDecidedAt(now);
+        proposal.setDecisionNote(blank(note) ? "审批人拒绝自治动作" : note.trim());
+        proposal.setUpdatedAt(now);
+        mapper.updateById(proposal);
+        auditService.record(new AuditEntry(
+                AuditService.UPDATE, "AUTONOMY_APPROVAL", proposal.getId(), proposal.getTitle(),
+                "GOVERNANCE", true, null,
+                "审批人拒绝自治动作：" + proposal.getDecisionNote(), "autonomy-approval"));
+        return toView(proposal);
+    }
+
+    private AgentActionProposal loadWorkspaceProposal(String proposalId, Caller caller) {
+        AgentActionProposal proposal = mapper.selectById(proposalId);
+        if (proposal == null || !caller.workspaceId().equals(proposal.getWorkspaceId())) {
+            throw new BizException(ErrorCode.GOV_PROPOSAL_NOT_FOUND, "操作提案不存在");
+        }
+        return proposal;
+    }
+
     private Map<String, Object> executeAction(String actionType, Map<String, Object> payload) {
         return switch (actionType) {
             case ACTION_CREATE_LOCAL_DATASOURCE -> {
@@ -329,6 +451,13 @@ public class AgentActionProposalService {
                     out.put("durationMillis", result.durationMillis());
                 }
                 yield out;
+            }
+            case ACTION_AUTONOMY_FLOW_APPROVAL -> {
+                if (autonomyApprovalExecutor == null) {
+                    throw new BizException(ErrorCode.SYS_INTERNAL_ERROR,
+                            "自治审批执行器未装配，无法唤醒流程");
+                }
+                yield autonomyApprovalExecutor.execute(payload);
             }
             default -> throw new BizException(ErrorCode.SYS_VALIDATION_FAILED,
                     "不支持的提案动作类型: " + actionType);

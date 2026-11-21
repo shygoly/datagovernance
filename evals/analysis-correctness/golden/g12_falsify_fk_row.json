@@ -1,0 +1,13 @@
+{
+  "id": "g12_falsify_fk_row",
+  "kind": "sql_row",
+  "dialect": "H2",
+  "setup_sql": [
+    "CREATE TABLE parent (id BIGINT PRIMARY KEY)",
+    "CREATE TABLE child (id BIGINT PRIMARY KEY, parent_id BIGINT)",
+    "INSERT INTO parent VALUES (1), (2)",
+    "INSERT INTO child VALUES (10, 1), (11, 1), (12, 2), (13, NULL)"
+  ],
+  "sql": "SELECT AVG(CASE WHEN p.id IS NOT NULL THEN 1.0 ELSE 0.0 END) AS fk_match_rate FROM child c LEFT JOIN parent p ON c.parent_id = p.id",
+  "expect_cell_min": 0.75
+}

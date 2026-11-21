@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""一键端到端配置 MIMIC-IV + eICU-CRD 临床多仓库、数据目录、逻辑表、全套 GLOBAL 临床语义本体、
-跨仓异构物理映射、知识图谱关系边与标准化值字典。
+"""一键端到端配置 MIMIC-IV + eICU-CRD + Synthea(CHANCE-HCC stub) 临床多仓库、数据目录、逻辑表、
+全套 GLOBAL 临床语义本体、跨仓异构物理映射、知识图谱关系边与标准化值字典。
 
-完全幂等，可反复执行。
+完全幂等，可反复执行。Synthea 库不可达时跳过第三仓，不阻断 MIMIC/eICU 主流程。
 
 用法:
   python3 scripts/seed-clinical-multisource.py
@@ -12,9 +12,11 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 import urllib.error
 import urllib.request
+from pathlib import Path
 from typing import Any
 
 BASE_URL = os.environ.get("DG_BASE_URL", "http://127.0.0.1:8080").rstrip("/")
@@ -68,7 +70,7 @@ def ensure_credential(cli: Client) -> str:
         "authType": "PASSWORD",
         "username": PG_USER,
         "secret": PG_PASSWORD,
-        "description": "临床数据库（MIMIC-IV / eICU-CRD）只读访问凭据",
+        "description": "临床数据库（MIMIC-IV / eICU-CRD / Synthea）只读访问凭据",
     })
     print(f"[OK] created credential pg-clinical-readonly -> {created['id']}")
     return created["id"]
@@ -170,6 +172,35 @@ def ensure_logical_table(cli: Client, wh_id: str, ds_id: str, logical_name: str,
     return saved["id"]
 
 
+def try_provision_synthea_stubs() -> str | None:
+    """灌 Synthea stub；成功返回有效 databaseName（通常 synthea），失败返回 None。"""
+    script = Path(__file__).resolve().parent / "seed" / "provision_synthea_hcc_stubs.py"
+    if not script.is_file():
+        print(f"[WARN] synthea provision script missing: {script}")
+        return None
+    env = dict(os.environ, PG_HOST=PG_HOST, PG_PORT=str(PG_PORT), PG_USER=PG_USER, PG_PASSWORD=PG_PASSWORD)
+    proc = subprocess.run([sys.executable, str(script)], env=env, capture_output=True, text=True)
+    if proc.stdout.strip():
+        print(proc.stdout.rstrip())
+    if proc.returncode != 0:
+        if proc.stderr.strip():
+            print(proc.stderr.rstrip(), file=sys.stderr)
+        print("[WARN] Synthea stub provision failed — skip synthea: warehouse wiring")
+        return None
+    effective = "synthea"
+    for line in proc.stdout.splitlines():
+        if line.startswith("SYNTHEA_EFFECTIVE_DB="):
+            effective = line.split("=", 1)[1].strip() or effective
+    return effective
+
+
+def try_find_dataset(ds_map: dict[str, dict[str, Any]], suffix: str) -> dict[str, Any] | None:
+    try:
+        return find_dataset(ds_map, suffix)
+    except KeyError:
+        return None
+
+
 CLINICAL_OBJECTS: list[dict[str, Any]] = [
     # ── Entities (6) ─────────────────────────────────────────────────────
     {
@@ -180,7 +211,7 @@ CLINICAL_OBJECTS: list[dict[str, Any]] = [
         "spec": {"primaryKey": "patient_id"},
         "aiContext": {
             "aliases": ["患者", "病人", "受试者", "Subject", "Patient"],
-            "grain": "每个实体代表一名唯一患者；跨 MIMIC-IV 与 eICU-CRD 互斥队列自动注入命名空间前缀防碰撞",
+            "grain": "每个实体代表一名唯一患者；跨 MIMIC-IV / eICU-CRD / Synthea 互斥队列自动注入 mimic:/eicu:/synthea: 命名空间前缀防碰撞",
         },
     },
     {
@@ -390,7 +421,7 @@ CLINICAL_OBJECTS: list[dict[str, Any]] = [
         },
         "aiContext": {
             "aliases": ["患者数", "病人数", "队列人数", "总患者数"],
-            "grain": "去重患者数，跨 MIMIC/eICU 互斥队列自动注入 mimic:/eicu: 命名空间前缀防碰撞",
+            "grain": "去重患者数，跨 MIMIC/eICU/Synthea 互斥队列自动注入 mimic:/eicu:/synthea: 命名空间前缀防碰撞",
         },
     },
     {
@@ -526,13 +557,13 @@ CLINICAL_OBJECTS: list[dict[str, Any]] = [
     },
     {
         "code": "concept.clinical.disjoint_multicenter",
-        "name": "多中心互斥队列约束（MIMIC ∩ eICU = ∅）",
+        "name": "多中心互斥队列约束（MIMIC ∩ eICU ∩ Synthea = ∅）",
         "objectType": "CONCEPT",
         "scope": "GLOBAL",
         "spec": {},
         "aiContext": {
             "aliases": ["多中心队列约束", "互斥队列"],
-            "disambiguation": "MIMIC-IV 与 eICU-CRD 患者群体完全互斥，联合统计严禁 INNER JOIN，须走 COHORT_UNION + 命名空间前缀",
+            "disambiguation": "MIMIC-IV、eICU-CRD 与 Synthea(CHANCE-HCC) 患者群体互斥；联合统计严禁无前缀 INNER JOIN，须走 COHORT_UNION + mimic:/eicu:/synthea: 命名空间前缀",
         },
     },
     {
@@ -544,6 +575,291 @@ CLINICAL_OBJECTS: list[dict[str, Any]] = [
         "aiContext": {
             "aliases": ["ICU诊疗路径", "重症临床流程"],
             "disambiguation": "住院入院 → ICU 监护 → 检验/诊断/用药干预 → 出院/死亡转归",
+        },
+    },
+    # ── CHANCE-HCC / Synthea 专病 Layer1+2（对齐 CNLC-2024 / mRECIST；非 MIMIC 克隆）──
+    {
+        "code": "entity.treatment_session",
+        "name": "介入治疗程次实体",
+        "objectType": "ENTITY",
+        "scope": "GLOBAL",
+        "spec": {"primaryKey": "session_id"},
+        "aiContext": {
+            "aliases": ["TACE程次", "介入session", "treatment session", "HAIC程次"],
+            "grain": "同一患者按 session_seq 区分的一次局部治疗完成单元；主键 session_id；禁止与住院 admission/hadm 混用",
+            "caveats": ["synthea_hcc.tace_session；T0=actual_exec_end_t0（实际执行完成），非医嘱/计费日"],
+        },
+    },
+    {
+        "code": "entity.followup_visit",
+        "name": "专病随访评估实体",
+        "objectType": "ENTITY",
+        "scope": "GLOBAL",
+        "spec": {"primaryKey": "followup_id"},
+        "aiContext": {
+            "aliases": ["随访访视", "mRECIST随访", "follow-up visit"],
+            "grain": "相对某治疗程次 T0 的一次影像/肿瘤学随访评估（visit_seq）",
+        },
+    },
+    {
+        "code": "entity.imaging_report",
+        "name": "影像报告实体（合成夹具）",
+        "objectType": "ENTITY",
+        "scope": "GLOBAL",
+        "spec": {"primaryKey": "report_id"},
+        "aiContext": {
+            "aliases": ["影像报告", "CT/MRI报告"],
+            "grain": "合成中文影像报告文本夹具；禁止把 report_text 写入 ai_context 或当作 Standard",
+            "caveats": ["仅治理/质控样例；问数默认不返回全文"],
+        },
+    },
+    {
+        "code": "entity.hcc_diagnosis",
+        "name": "肝癌专病诊断实体",
+        "objectType": "ENTITY",
+        "scope": "GLOBAL",
+        "spec": {"primaryKey": "diagnosis_id"},
+        "aiContext": {
+            "aliases": ["HCC诊断", "肝癌分期诊断"],
+            "grain": "队列内一次肝癌基线诊断（含 CNLC/Child-Pugh/PVTT/肿瘤负荷）；可与通用 entity.diagnosis 并存但勿混 grain",
+        },
+    },
+    {
+        "code": "attr.diagnosis.cnlc_stage",
+        "name": "CNLC 分期",
+        "objectType": "ATTRIBUTE",
+        "scope": "GLOBAL",
+        "standardRef": "STD-CNLC-2024-STAGE",
+        "spec": {"forms": [{"role": "CODE", "dataType": "STRING"}]},
+        "aiContext": {
+            "aliases": ["中国肝癌分期", "CNLC", "China Liver Cancer Staging"],
+            "safeEnumExamples": ["Ia", "Ib", "IIa", "IIb", "IIIa", "IIIb", "IV"],
+            "disambiguation": "CNLC-2024：Ia 单灶≤5cm；Ib 单灶>5cm或2–3灶≤3cm；IIa 2–3灶最大径>3cm；IIb≥4灶无栓无肝外；IIIa有血管侵犯无肝外；IIIb有肝外转移；IV为PS3–4或Child-Pugh C。勿与 BCLC 字母分期混用。",
+        },
+    },
+    {
+        "code": "attr.diagnosis.child_pugh_class",
+        "name": "Child-Pugh 分级",
+        "objectType": "ATTRIBUTE",
+        "scope": "GLOBAL",
+        "standardRef": "STD-CHILD-PUGH-CLASS",
+        "spec": {"forms": [{"role": "CODE", "dataType": "STRING"}]},
+        "aiContext": {
+            "aliases": ["Child-Pugh", "肝功能分级", "CTP"],
+            "safeEnumExamples": ["A", "B", "C"],
+            "disambiguation": "A/B/C 三级；CNLC IV 可因 Child-Pugh C 判定，与肿瘤负荷无关",
+        },
+    },
+    {
+        "code": "attr.diagnosis.pvtt_grade",
+        "name": "门脉癌栓分级",
+        "objectType": "ATTRIBUTE",
+        "scope": "GLOBAL",
+        "standardRef": "STD-PVTT-GRADE-LOCAL",
+        "spec": {"forms": [{"role": "CODE", "dataType": "STRING"}]},
+        "aiContext": {
+            "aliases": ["PVTT", "门静脉癌栓", "血管侵犯分级"],
+            "disambiguation": "合成字段 hcc_pvtt_grade；有影像可见血管癌栓时常对应 CNLC IIIa 语境（无肝外转移时）",
+        },
+    },
+    {
+        "code": "attr.treatment.modality",
+        "name": "局部治疗方式",
+        "objectType": "ATTRIBUTE",
+        "scope": "GLOBAL",
+        "standardRef": "STD-HCC-LOCOREGIONAL-MODALITY",
+        "spec": {"forms": [{"role": "CODE", "dataType": "STRING"}]},
+        "aiContext": {
+            "aliases": ["介入方式", "TACE类型", "modality"],
+            "safeEnumExamples": ["cTACE", "DEB-TACE", "HAIC"],
+            "disambiguation": "cTACE/DEB-TACE 为栓塞类；HAIC 为肝动脉灌注化疗，适应证与 TACE 不完全等同（多用于 TACE 抵抗/门脉癌栓等场景），禁止把 HAIC 统计进「TACE 次数」而不加模态过滤",
+        },
+    },
+    {
+        "code": "attr.treatment.session_seq",
+        "name": "治疗程次序号",
+        "objectType": "ATTRIBUTE",
+        "scope": "GLOBAL",
+        "standardRef": "STD-TREATMENT-SESSION-SEQ",
+        "spec": {"forms": [{"role": "CODE", "dataType": "INTEGER"}]},
+        "aiContext": {
+            "aliases": ["session_seq", "第几程", "程次"],
+            "disambiguation": "由多 T0 切分得到的稳定序号；跨程归因必须带 session_seq，禁止「取最近一次治疗」",
+        },
+    },
+    {
+        "code": "attr.treatment.t0_exec_end",
+        "name": "实际治疗完成时间 T0",
+        "objectType": "ATTRIBUTE",
+        "scope": "GLOBAL",
+        "standardRef": "STD-TREATMENT-T0-ACTUAL-EXEC",
+        "spec": {"forms": [{"role": "TIME_KEY", "dataType": "TIMESTAMP"}]},
+        "aiContext": {
+            "aliases": ["T0", "actual_exec_end_t0", "治疗锚点时间"],
+            "disambiguation": "临床实际执行完成时间；严禁映射到计费日/医嘱开立日/出导管室近似字段而不加 t0_trap_warning",
+            "caveats": ["计费 treat_date、医嘱时间不是 T0"],
+        },
+    },
+    {
+        "code": "attr.followup.mrecist_response",
+        "name": "mRECIST 疗效",
+        "objectType": "ATTRIBUTE",
+        "scope": "GLOBAL",
+        "standardRef": "STD-MRECIST-RESPONSE",
+        "spec": {"forms": [{"role": "CODE", "dataType": "STRING"}]},
+        "aiContext": {
+            "aliases": ["mRECIST", "肿瘤疗效", "影像缓解"],
+            "safeEnumExamples": ["CR", "PR", "SD", "PD"],
+            "disambiguation": "改良 RECIST：按存活靶灶评估；ORR 通常计 CR+PR。TACE 短期疗效常用 mRECIST/EASL，勿与经典 RECIST 混用。",
+        },
+    },
+    {
+        "code": "fact.hcc.days_from_t0",
+        "name": "相对 T0 随访天数事实",
+        "objectType": "FACT",
+        "scope": "GLOBAL",
+        "spec": {"unit": "天", "dataType": "INTEGER"},
+        "aiContext": {"aliases": ["days_from_t0", "距治疗天数"]},
+    },
+    {
+        "code": "fact.hcc.baseline_afp",
+        "name": "基线 AFP 事实",
+        "objectType": "FACT",
+        "scope": "GLOBAL",
+        "spec": {"unit": "ng/mL", "dataType": "DOUBLE"},
+        "aiContext": {"aliases": ["AFP", "甲胎蛋白"]},
+    },
+    {
+        "code": "metric.hcc.session_count",
+        "name": "介入治疗程次数",
+        "objectType": "METRIC",
+        "scope": "GLOBAL",
+        "standardRef": "STD-HCC-SESSION-CNT-001",
+        "spec": {
+            "metricKind": "BASE",
+            "aggregation": "COUNT_DISTINCT",
+            "unit": "程",
+            "allowedDimensions": [
+                "attr.system.cohort", "attr.treatment.modality", "attr.treatment.session_seq",
+                "attr.diagnosis.cnlc_stage", "attr.patient.gender", "attr.patient.age_group",
+            ],
+        },
+        "aiContext": {
+            "aliases": ["TACE次数", "介入程次数", "session count"],
+            "grain": "按 session_id 去重；按 modality 过滤时 HAIC 与 TACE 分开统计",
+        },
+    },
+    {
+        "code": "metric.hcc.followup_visit_count",
+        "name": "专病随访访视次数",
+        "objectType": "METRIC",
+        "scope": "GLOBAL",
+        "standardRef": "STD-HCC-FOLLOWUP-CNT-001",
+        "spec": {
+            "metricKind": "BASE",
+            "aggregation": "COUNT_DISTINCT",
+            "unit": "次",
+            "allowedDimensions": [
+                "attr.system.cohort", "attr.followup.mrecist_response",
+                "attr.treatment.modality", "attr.diagnosis.cnlc_stage",
+            ],
+        },
+        "aiContext": {"aliases": ["随访次数", "mRECIST访视数"]},
+    },
+    {
+        "code": "metric.hcc.orr_rate",
+        "name": "客观缓解率 ORR（mRECIST）",
+        "objectType": "METRIC",
+        "scope": "GLOBAL",
+        "standardRef": "STD-HCC-ORR-MRECIST-001",
+        "spec": {
+            "metricKind": "BASE",
+            "aggregation": "AVG",
+            "unit": "%",
+            "allowedDimensions": [
+                "attr.system.cohort", "attr.treatment.modality", "attr.diagnosis.cnlc_stage",
+                "attr.patient.gender", "attr.patient.age_group",
+            ],
+        },
+        "aiContext": {
+            "aliases": ["ORR", "客观缓解率", "CR+PR率"],
+            "grain": "访视级：mRECIST∈{CR,PR}→100，否则 0，再求均值；跨仓须两阶段加权，禁止 LLM 心算",
+            "caveats": ["MVP 按访视而非最佳总体疗效；完整 best-ORR 需专病看板/统计算子"],
+        },
+    },
+    {
+        "code": "metric.hcc.dead_count",
+        "name": "专病队列死亡人数",
+        "objectType": "METRIC",
+        "scope": "GLOBAL",
+        "standardRef": "STD-HCC-DEAD-CNT-001",
+        "spec": {
+            "metricKind": "BASE",
+            "aggregation": "SUM",
+            "unit": "人",
+            "allowedDimensions": [
+                "attr.system.cohort", "attr.diagnosis.cnlc_stage", "attr.diagnosis.child_pugh_class",
+                "attr.patient.gender", "attr.patient.age_group",
+            ],
+        },
+        "aiContext": {
+            "aliases": ["HCC死亡数", "队列死亡"],
+            "grain": "survival_status=Dead 计 1；Lost_to_FollowUp 不计死亡",
+        },
+    },
+    {
+        "code": "concept.hcc.cnlc_staging",
+        "name": "中国肝癌分期体系（CNLC-2024）",
+        "objectType": "CONCEPT",
+        "scope": "GLOBAL",
+        "spec": {},
+        "aiContext": {
+            "aliases": ["CNLC分期体系", "中国肝癌分期"],
+            "disambiguation": "权威口径：国家卫健委《原发性肝癌诊疗指南（2024年版）》CNLC Ia–IV；与 BCLC 不同体系，问数消歧时必须点名 CNLC",
+        },
+    },
+    {
+        "code": "concept.hcc.mrecist",
+        "name": "mRECIST 疗效评估概念",
+        "objectType": "CONCEPT",
+        "scope": "GLOBAL",
+        "spec": {},
+        "aiContext": {
+            "aliases": ["改良RECIST", "存活靶灶评估"],
+            "disambiguation": "局部治疗短期疗效常用；ORR=CR+PR；勿与经典 RECIST 径线总和规则混用",
+        },
+    },
+    {
+        "code": "concept.hcc.t0_actual_exec",
+        "name": "实际治疗完成锚点 T0",
+        "objectType": "CONCEPT",
+        "scope": "GLOBAL",
+        "spec": {},
+        "aiContext": {
+            "aliases": ["治疗T0", "执行完成锚点"],
+            "disambiguation": "仅 actual_exec_end_t0；计费/医嘱/出室近似时间属陷阱字段",
+        },
+    },
+    {
+        "code": "concept.hcc.locoregional_modality",
+        "name": "肝癌局部治疗模态（TACE/HAIC）",
+        "objectType": "CONCEPT",
+        "scope": "GLOBAL",
+        "spec": {},
+        "aiContext": {
+            "aliases": ["介入治疗模态", "TACE与HAIC"],
+            "disambiguation": "TACE（含 cTACE/DEB-TACE）与 HAIC 适应证与统计口径分离；指南中 HAIC 多作补充/特定人群方案",
+        },
+    },
+    {
+        "code": "process.hcc.chance_care_pathway",
+        "name": "CHANCE 肝癌诊疗全路径",
+        "objectType": "PROCESS",
+        "scope": "GLOBAL",
+        "spec": {},
+        "aiContext": {
+            "aliases": ["肝癌专病路径", "CHANCE路径", "介入-随访路径"],
+            "disambiguation": "基线诊断(CNLC等) → 介入程次(session_seq,T0) → mRECIST随访 → 生存/失访；影像报告为旁路证据夹具",
         },
     },
 ]
@@ -577,8 +893,36 @@ SEMANTIC_LINKS: list[dict[str, Any]] = [
     {"from": "entity.admission", "to": "entity.icu_stay", "cat": "SEMANTIC", "type": "PRECEDES", "rationale": "住院登记先于或同步触发 ICU 入科监护"},
     {"from": "entity.icu_stay", "to": "process.clinical.icu_care_pathway", "cat": "SEMANTIC", "type": "PART_OF", "rationale": "ICU 监护属于重症临床诊疗全路径核心环节"},
     # CAUSAL: Governance & clinical causality
-    {"from": "concept.clinical.disjoint_multicenter", "to": "metric.patient.count", "cat": "CAUSAL", "type": "CONSTRAINS", "rationale": "多中心互斥队列约束跨仓去重患者数必须带 mimic:/eicu: 命名空间前缀"},
+    {"from": "concept.clinical.disjoint_multicenter", "to": "metric.patient.count", "cat": "CAUSAL", "type": "CONSTRAINS", "rationale": "多中心互斥队列约束跨仓去重患者数必须带 mimic:/eicu:/synthea: 命名空间前缀"},
     {"from": "concept.clinical.elderly_cohort", "to": "metric.hospital.mortality_rate", "cat": "CAUSAL", "type": "AFFECTS", "rationale": "高龄重症群体显著影响院内病死率分布"},
+    # CHANCE-HCC pathway & knowledge
+    {"from": "entity.patient", "to": "entity.hcc_diagnosis", "cat": "STRUCTURAL", "type": "RELATES_TO", "card": "1:N", "rationale": "专病队列患者可有肝癌基线诊断"},
+    {"from": "entity.hcc_diagnosis", "to": "attr.diagnosis.cnlc_stage", "cat": "STRUCTURAL", "type": "HAS_ATTRIBUTE", "card": "1:1", "rationale": "诊断绑定 CNLC 分期"},
+    {"from": "entity.hcc_diagnosis", "to": "attr.diagnosis.child_pugh_class", "cat": "STRUCTURAL", "type": "HAS_ATTRIBUTE", "card": "1:1", "rationale": "诊断绑定 Child-Pugh"},
+    {"from": "entity.hcc_diagnosis", "to": "attr.diagnosis.pvtt_grade", "cat": "STRUCTURAL", "type": "HAS_ATTRIBUTE", "card": "1:1", "rationale": "诊断绑定门脉癌栓分级"},
+    {"from": "entity.hcc_diagnosis", "to": "fact.hcc.baseline_afp", "cat": "STRUCTURAL", "type": "HAS_FACT", "card": "1:1", "rationale": "基线 AFP"},
+    {"from": "entity.hcc_diagnosis", "to": "entity.treatment_session", "cat": "STRUCTURAL", "type": "RELATES_TO", "card": "1:N", "rationale": "一次诊断可对应多程介入"},
+    {"from": "entity.treatment_session", "to": "attr.treatment.modality", "cat": "STRUCTURAL", "type": "HAS_ATTRIBUTE", "card": "N:1", "rationale": "程次绑定局部治疗模态"},
+    {"from": "entity.treatment_session", "to": "attr.treatment.session_seq", "cat": "STRUCTURAL", "type": "HAS_ATTRIBUTE", "card": "1:1", "rationale": "程次稳定序号"},
+    {"from": "entity.treatment_session", "to": "attr.treatment.t0_exec_end", "cat": "STRUCTURAL", "type": "HAS_ATTRIBUTE", "card": "1:1", "rationale": "程次绑定实际执行完成 T0"},
+    {"from": "entity.treatment_session", "to": "entity.followup_visit", "cat": "STRUCTURAL", "type": "RELATES_TO", "card": "1:N", "rationale": "一程治疗后可有多次随访"},
+    {"from": "entity.followup_visit", "to": "attr.followup.mrecist_response", "cat": "STRUCTURAL", "type": "HAS_ATTRIBUTE", "card": "1:1", "rationale": "随访绑定 mRECIST"},
+    {"from": "entity.followup_visit", "to": "fact.hcc.days_from_t0", "cat": "STRUCTURAL", "type": "HAS_FACT", "card": "1:1", "rationale": "随访相对 T0 天数"},
+    {"from": "entity.patient", "to": "entity.imaging_report", "cat": "STRUCTURAL", "type": "RELATES_TO", "card": "1:N", "rationale": "患者可有多份影像报告夹具"},
+    {"from": "metric.hcc.session_count", "to": "entity.treatment_session", "cat": "STRUCTURAL", "type": "DERIVED_FROM", "card": "N:1", "rationale": "程次数统计治疗程次实体"},
+    {"from": "metric.hcc.followup_visit_count", "to": "entity.followup_visit", "cat": "STRUCTURAL", "type": "DERIVED_FROM", "card": "N:1", "rationale": "随访次数统计随访实体"},
+    {"from": "metric.hcc.orr_rate", "to": "attr.followup.mrecist_response", "cat": "STRUCTURAL", "type": "DERIVED_FROM", "card": "N:1", "rationale": "ORR 由 mRECIST CR/PR 派生"},
+    {"from": "attr.diagnosis.cnlc_stage", "to": "concept.hcc.cnlc_staging", "cat": "SEMANTIC", "type": "MAPS_TO_CONCEPT", "rationale": "分期码映射 CNLC-2024 体系概念"},
+    {"from": "attr.followup.mrecist_response", "to": "concept.hcc.mrecist", "cat": "SEMANTIC", "type": "MAPS_TO_CONCEPT", "rationale": "疗效码映射 mRECIST 概念"},
+    {"from": "attr.treatment.t0_exec_end", "to": "concept.hcc.t0_actual_exec", "cat": "SEMANTIC", "type": "MAPS_TO_CONCEPT", "rationale": "T0 字段映射实际执行完成概念"},
+    {"from": "attr.treatment.modality", "to": "concept.hcc.locoregional_modality", "cat": "SEMANTIC", "type": "MAPS_TO_CONCEPT", "rationale": "模态码映射局部治疗概念"},
+    {"from": "entity.hcc_diagnosis", "to": "entity.treatment_session", "cat": "SEMANTIC", "type": "PRECEDES", "rationale": "基线诊断先于介入程次"},
+    {"from": "entity.treatment_session", "to": "entity.followup_visit", "cat": "SEMANTIC", "type": "PRECEDES", "rationale": "治疗完成 T0 先于随访评估"},
+    {"from": "entity.hcc_diagnosis", "to": "process.hcc.chance_care_pathway", "cat": "SEMANTIC", "type": "PART_OF", "rationale": "专病诊断属于 CHANCE 路径"},
+    {"from": "entity.treatment_session", "to": "process.hcc.chance_care_pathway", "cat": "SEMANTIC", "type": "PART_OF", "rationale": "介入程次属于 CHANCE 路径"},
+    {"from": "entity.followup_visit", "to": "process.hcc.chance_care_pathway", "cat": "SEMANTIC", "type": "PART_OF", "rationale": "随访属于 CHANCE 路径"},
+    {"from": "concept.hcc.t0_actual_exec", "to": "metric.hcc.orr_rate", "cat": "CAUSAL", "type": "CONSTRAINS", "rationale": "ORR/随访归因必须以实际 T0 为锚，禁止计费日"},
+    {"from": "concept.hcc.locoregional_modality", "to": "metric.hcc.session_count", "cat": "CAUSAL", "type": "CONSTRAINS", "rationale": "统计介入次数时须按 modality 区分 TACE 与 HAIC"},
 ]
 
 VALUE_DICT_SEEDS: dict[str, list[tuple[str, str, list[str]]]] = {
@@ -613,6 +957,31 @@ VALUE_DICT_SEEDS: dict[str, list[tuple[str, str, list[str]]]] = {
         ("EXPIRED", "院内死亡", ["死亡", "Expired", "去世"]),
         ("UNKNOWN", "结局未知", ["未知"]),
     ],
+    "attr.diagnosis.cnlc_stage": [
+        ("Ia", "CNLC Ⅰa", ["Ia", "I a", "1a"]),
+        ("Ib", "CNLC Ⅰb", ["Ib", "I b", "1b"]),
+        ("IIa", "CNLC Ⅱa", ["IIa", "II a", "2a"]),
+        ("IIb", "CNLC Ⅱb", ["IIb", "II b", "2b"]),
+        ("IIIa", "CNLC Ⅲa", ["IIIa", "III a", "3a"]),
+        ("IIIb", "CNLC Ⅲb", ["IIIb", "III b", "3b"]),
+        ("IV", "CNLC Ⅳ", ["IV", "4期"]),
+    ],
+    "attr.diagnosis.child_pugh_class": [
+        ("A", "Child-Pugh A", ["A级"]),
+        ("B", "Child-Pugh B", ["B级"]),
+        ("C", "Child-Pugh C", ["C级"]),
+    ],
+    "attr.treatment.modality": [
+        ("cTACE", "常规 TACE", ["conventional TACE", "c-TACE"]),
+        ("DEB-TACE", "载药微球 TACE", ["DEB TACE", "D-TACE"]),
+        ("HAIC", "肝动脉灌注化疗", ["hepatic arterial infusion chemotherapy"]),
+    ],
+    "attr.followup.mrecist_response": [
+        ("CR", "完全缓解", ["Complete Response", "完全缓解"]),
+        ("PR", "部分缓解", ["Partial Response", "部分缓解"]),
+        ("SD", "疾病稳定", ["Stable Disease"]),
+        ("PD", "疾病进展", ["Progressive Disease"]),
+    ],
 }
 
 
@@ -645,9 +1014,30 @@ def main() -> int:
         "Philips eICU Collaborative Research Database 多中心重症库（eicu_crd + 标准化视图）",
     )
 
+    synthea_db = try_provision_synthea_stubs()
+    synthea_ready = bool(synthea_db)
+    synthea_ds_id: str | None = None
+    synthea_datasets: dict[str, dict[str, Any]] = {}
+    wh_synthea_id: str | None = None
+    if synthea_db:
+        try:
+            synthea_ds_id = ensure_datasource(
+                cli, cred_id, "Synthea CHANCE-HCC 合成仓", synthea_db,
+                "Synthea CHANCE-HCC 合成队列 stub（schema synthea_hcc；id 前缀 synthea:）",
+            )
+        except Exception as ex:  # noqa: BLE001 — 第三仓失败不阻断 MIMIC/eICU
+            print(f"[WARN] Synthea datasource unavailable: {ex}")
+            synthea_ready = False
+
     # 2. Catalog Sources & Metadata Refresh
     mimic_datasets = ensure_catalog_and_refresh(cli, mimic_ds_id, "MIMIC-IV 数据目录")
     eicu_datasets = ensure_catalog_and_refresh(cli, eicu_ds_id, "eICU-CRD 数据目录")
+    if synthea_ready and synthea_ds_id:
+        try:
+            synthea_datasets = ensure_catalog_and_refresh(cli, synthea_ds_id, "Synthea CHANCE-HCC 数据目录")
+        except Exception as ex:  # noqa: BLE001
+            print(f"[WARN] Synthea catalog refresh failed: {ex}")
+            synthea_ready = False
 
     # 3. Multi-Warehouse Mounting (COHORT_UNION + DUCKDB federation ready)
     wh_mimic_id = ensure_warehouse(cli, {
@@ -674,6 +1064,19 @@ def main() -> int:
         "federationEngine": "DUCKDB",
         "priority": 20,
     })
+    if synthea_ready and synthea_ds_id:
+        wh_synthea_id = ensure_warehouse(cli, {
+            "datasourceId": synthea_ds_id,
+            "code": "synthea_hcc",
+            "name": "Synthea CHANCE-HCC 合成仓",
+            "warehouseRole": "SECONDARY",
+            "cohortCode": "SYNTHEA_HCC",
+            "dialect": "POSTGRESQL",
+            "idNamespacePrefix": "synthea:",
+            "combineMode": "COHORT_UNION",
+            "federationEngine": "DUCKDB",
+            "priority": 30,
+        })
 
     # 4. Logical Tables (Standardized Views logicalSize=50 prioritized over Raw Tables logicalSize=500)
     ds_m_std = find_dataset(mimic_datasets, "mimiciv_icu.v_icu_stay_std")
@@ -706,6 +1109,36 @@ def main() -> int:
     lt_e_med = ensure_logical_table(cli, wh_eicu_id, ds_e_med["id"], "lt_eicu_medication", "FACT", 500)
     ensure_logical_table(cli, wh_eicu_id, ds_e_vital["id"], "lt_eicu_vitalperiodic", "FACT", 600)
     print("[OK] logical tables provisioned for MIMIC-IV & eICU-CRD")
+
+    # 专病表：cohort / diagnosis / tace_session / followup / imaging（不造 MIMIC 同构表）
+    ds_s_pat = try_find_dataset(synthea_datasets, "synthea_hcc.cohort_patient") if synthea_ready else None
+    ds_s_tace = try_find_dataset(synthea_datasets, "synthea_hcc.tace_session") if synthea_ready else None
+    ds_s_dx = try_find_dataset(synthea_datasets, "synthea_hcc.hcc_diagnosis") if synthea_ready else None
+    ds_s_fup = try_find_dataset(synthea_datasets, "synthea_hcc.followup_mrecist") if synthea_ready else None
+    ds_s_img = try_find_dataset(synthea_datasets, "synthea_hcc.imaging_report_zh") if synthea_ready else None
+    lt_s_pat = lt_s_tace = lt_s_dx = lt_s_fup = lt_s_img = None
+    cols_s_pat: dict[str, str] = {}
+    cols_s_tace: dict[str, str] = {}
+    cols_s_dx: dict[str, str] = {}
+    cols_s_fup: dict[str, str] = {}
+    cols_s_img: dict[str, str] = {}
+    if wh_synthea_id and ds_s_pat and ds_s_tace and ds_s_dx:
+        lt_s_pat = ensure_logical_table(cli, wh_synthea_id, ds_s_pat["id"], "lt_synthea_cohort_patient", "LOOKUP", 300)
+        lt_s_tace = ensure_logical_table(cli, wh_synthea_id, ds_s_tace["id"], "lt_synthea_tace_session", "FACT", 400)
+        lt_s_dx = ensure_logical_table(cli, wh_synthea_id, ds_s_dx["id"], "lt_synthea_hcc_diagnosis", "FACT", 80)
+        cols_s_pat = get_columns_map(cli, ds_s_pat["id"])
+        cols_s_tace = get_columns_map(cli, ds_s_tace["id"])
+        cols_s_dx = get_columns_map(cli, ds_s_dx["id"])
+        if ds_s_fup:
+            lt_s_fup = ensure_logical_table(cli, wh_synthea_id, ds_s_fup["id"], "lt_synthea_followup_mrecist", "FACT", 450)
+            cols_s_fup = get_columns_map(cli, ds_s_fup["id"])
+        if ds_s_img:
+            lt_s_img = ensure_logical_table(cli, wh_synthea_id, ds_s_img["id"], "lt_synthea_imaging_report", "FACT", 500)
+            cols_s_img = get_columns_map(cli, ds_s_img["id"])
+        print("[OK] logical tables provisioned for Synthea CHANCE-HCC (synthea:)")
+    elif synthea_ready:
+        print("[WARN] Synthea catalog datasets incomplete — skip synthea logical tables/mappings")
+        wh_synthea_id = None
 
     # 5. Upsert & Publish All GLOBAL Clinical Ontology Objects
     existing_page = cli.call("GET", "/api/v1/metadata/semantic/objects?page=1&size=200")
@@ -822,13 +1255,49 @@ def main() -> int:
         ("metric.patient.avg_age", {"mappingRole": "MEASURE", "warehouseId": wh_eicu_id, "logicalTableId": lt_e_std, "catalogDatasetId": ds_e_std["id"], "catalogColumnId": cols_e_std.get("age_years"), "sourceUnit": "岁", "targetUnit": "岁", "priority": 10}),
     ]
 
+    if wh_synthea_id and lt_s_pat and lt_s_tace and lt_s_dx and ds_s_pat and ds_s_tace and ds_s_dx:
+        mapping_specs.extend([
+            ("entity.patient", {"mappingRole": "ID", "warehouseId": wh_synthea_id, "logicalTableId": lt_s_pat, "catalogDatasetId": ds_s_pat["id"], "catalogColumnId": cols_s_pat.get("patient_id"), "isLookupTable": True, "priority": 30}),
+            ("entity.hcc_diagnosis", {"mappingRole": "ID", "warehouseId": wh_synthea_id, "logicalTableId": lt_s_dx, "catalogDatasetId": ds_s_dx["id"], "catalogColumnId": cols_s_dx.get("diagnosis_id"), "priority": 30}),
+            ("entity.treatment_session", {"mappingRole": "ID", "warehouseId": wh_synthea_id, "logicalTableId": lt_s_tace, "catalogDatasetId": ds_s_tace["id"], "catalogColumnId": cols_s_tace.get("session_id"), "priority": 30}),
+            ("attr.patient.gender", {"mappingRole": "CODE", "warehouseId": wh_synthea_id, "logicalTableId": lt_s_pat, "catalogDatasetId": ds_s_pat["id"], "catalogColumnId": cols_s_pat.get("gender_std"), "priority": 30}),
+            ("attr.patient.age_group", {"mappingRole": "CODE", "warehouseId": wh_synthea_id, "logicalTableId": lt_s_pat, "catalogDatasetId": ds_s_pat["id"], "catalogColumnId": cols_s_pat.get("age_group_std"), "priority": 30}),
+            ("attr.patient.race", {"mappingRole": "CODE", "warehouseId": wh_synthea_id, "logicalTableId": lt_s_pat, "catalogDatasetId": ds_s_pat["id"], "catalogColumnId": cols_s_pat.get("race_std"), "priority": 30}),
+            ("attr.outcome.hospital_status", {"mappingRole": "CODE", "warehouseId": wh_synthea_id, "logicalTableId": lt_s_pat, "catalogDatasetId": ds_s_pat["id"], "catalogColumnId": cols_s_pat.get("survival_status"), "valueNormalization": {"Alive": "ALIVE", "Dead": "EXPIRED", "Lost_to_FollowUp": "UNKNOWN"}, "priority": 30}),
+            ("attr.diagnosis.icd_code", {"mappingRole": "CODE", "warehouseId": wh_synthea_id, "logicalTableId": lt_s_dx, "catalogDatasetId": ds_s_dx["id"], "catalogColumnId": cols_s_dx.get("icd_code"), "priority": 30}),
+            ("attr.diagnosis.cnlc_stage", {"mappingRole": "CODE", "warehouseId": wh_synthea_id, "logicalTableId": lt_s_dx, "catalogDatasetId": ds_s_dx["id"], "catalogColumnId": cols_s_dx.get("hcc_cnlc_stage"), "priority": 30}),
+            ("attr.diagnosis.child_pugh_class", {"mappingRole": "CODE", "warehouseId": wh_synthea_id, "logicalTableId": lt_s_dx, "catalogDatasetId": ds_s_dx["id"], "catalogColumnId": cols_s_dx.get("hcc_child_pugh_class"), "priority": 30}),
+            ("attr.diagnosis.pvtt_grade", {"mappingRole": "CODE", "warehouseId": wh_synthea_id, "logicalTableId": lt_s_dx, "catalogDatasetId": ds_s_dx["id"], "catalogColumnId": cols_s_dx.get("hcc_pvtt_grade"), "priority": 30}),
+            ("attr.treatment.modality", {"mappingRole": "CODE", "warehouseId": wh_synthea_id, "logicalTableId": lt_s_tace, "catalogDatasetId": ds_s_tace["id"], "catalogColumnId": cols_s_tace.get("modality"), "priority": 30}),
+            ("attr.treatment.session_seq", {"mappingRole": "CODE", "warehouseId": wh_synthea_id, "logicalTableId": lt_s_tace, "catalogDatasetId": ds_s_tace["id"], "catalogColumnId": cols_s_tace.get("session_seq"), "priority": 30}),
+            ("attr.treatment.t0_exec_end", {"mappingRole": "TIME_KEY", "warehouseId": wh_synthea_id, "logicalTableId": lt_s_tace, "catalogDatasetId": ds_s_tace["id"], "catalogColumnId": cols_s_tace.get("actual_exec_end_t0"), "priority": 30}),
+            ("fact.hcc.baseline_afp", {"mappingRole": "MEASURE", "warehouseId": wh_synthea_id, "logicalTableId": lt_s_dx, "catalogDatasetId": ds_s_dx["id"], "catalogColumnId": cols_s_dx.get("baseline_afp_ng_ml"), "sourceUnit": "ng/mL", "targetUnit": "ng/mL", "priority": 30}),
+            ("metric.patient.count", {"mappingRole": "MEASURE", "warehouseId": wh_synthea_id, "logicalTableId": lt_s_pat, "catalogDatasetId": ds_s_pat["id"], "catalogColumnId": cols_s_pat.get("patient_id"), "priority": 30}),
+            ("metric.patient.avg_age", {"mappingRole": "MEASURE", "warehouseId": wh_synthea_id, "logicalTableId": lt_s_pat, "catalogDatasetId": ds_s_pat["id"], "catalogColumnId": cols_s_pat.get("age_years"), "sourceUnit": "岁", "targetUnit": "岁", "priority": 30}),
+            ("metric.hcc.session_count", {"mappingRole": "MEASURE", "warehouseId": wh_synthea_id, "logicalTableId": lt_s_tace, "catalogDatasetId": ds_s_tace["id"], "catalogColumnId": cols_s_tace.get("session_id"), "priority": 30}),
+            ("metric.hcc.dead_count", {"mappingRole": "MEASURE", "warehouseId": wh_synthea_id, "logicalTableId": lt_s_pat, "catalogDatasetId": ds_s_pat["id"], "catalogColumnId": cols_s_pat.get("survival_status"), "expressionSql": "CASE WHEN survival_status = 'Dead' THEN 1 ELSE 0 END", "priority": 30}),
+        ])
+        if lt_s_fup and ds_s_fup:
+            mapping_specs.extend([
+                ("entity.followup_visit", {"mappingRole": "ID", "warehouseId": wh_synthea_id, "logicalTableId": lt_s_fup, "catalogDatasetId": ds_s_fup["id"], "catalogColumnId": cols_s_fup.get("followup_id"), "priority": 30}),
+                ("attr.followup.mrecist_response", {"mappingRole": "CODE", "warehouseId": wh_synthea_id, "logicalTableId": lt_s_fup, "catalogDatasetId": ds_s_fup["id"], "catalogColumnId": cols_s_fup.get("mrecist_response"), "priority": 30}),
+                ("fact.hcc.days_from_t0", {"mappingRole": "MEASURE", "warehouseId": wh_synthea_id, "logicalTableId": lt_s_fup, "catalogDatasetId": ds_s_fup["id"], "catalogColumnId": cols_s_fup.get("days_from_t0"), "sourceUnit": "天", "targetUnit": "天", "priority": 30}),
+                ("metric.hcc.followup_visit_count", {"mappingRole": "MEASURE", "warehouseId": wh_synthea_id, "logicalTableId": lt_s_fup, "catalogDatasetId": ds_s_fup["id"], "catalogColumnId": cols_s_fup.get("followup_id"), "priority": 30}),
+                ("metric.hcc.orr_rate", {"mappingRole": "MEASURE", "warehouseId": wh_synthea_id, "logicalTableId": lt_s_fup, "catalogDatasetId": ds_s_fup["id"], "catalogColumnId": cols_s_fup.get("mrecist_response"), "expressionSql": "CASE WHEN mrecist_response IN ('CR','PR') THEN 100.0 ELSE 0.0 END", "sourceUnit": "%", "targetUnit": "%", "priority": 30}),
+            ])
+        if lt_s_img and ds_s_img:
+            mapping_specs.append(
+                ("entity.imaging_report", {"mappingRole": "ID", "warehouseId": wh_synthea_id, "logicalTableId": lt_s_img, "catalogDatasetId": ds_s_img["id"], "catalogColumnId": cols_s_img.get("report_id"), "priority": 30}),
+            )
+
     cached_mappings: dict[str, list[dict[str, Any]]] = {}
     for code, m_payload in mapping_specs:
         oid = obj_by_code[code]["id"]
         if oid not in cached_mappings:
             cached_mappings[oid] = cli.call("GET", f"/api/v1/metadata/semantic/objects/{oid}/mappings")
         ensure_mapping(cli, oid, cached_mappings[oid], m_payload)
-    print(f"[OK] provisioned {len(mapping_specs)} cross-warehouse heterogeneous mappings (MIMIC-IV + eICU-CRD)")
+    print(f"[OK] provisioned {len(mapping_specs)} cross-warehouse heterogeneous mappings (MIMIC-IV + eICU-CRD"
+          f"{' + Synthea' if wh_synthea_id else ''})")
 
     # 7. Knowledge Graph & Structural Links
     existing_links = cli.call("GET", "/api/v1/metadata/semantic/links")
@@ -866,7 +1335,8 @@ def main() -> int:
             vd_count += 1
     print(f"[OK] upserted {vd_count} standardized L1/L2 value dictionary entries")
 
-    print("\nALL MIMIC-IV + eICU-CRD CONFIGURATION & ONTOLOGY STANDARDIZATION COMPLETE!")
+    suffix = " + Synthea(CHANCE-HCC / synthea:)" if wh_synthea_id else " (Synthea skipped)"
+    print(f"\nALL MIMIC-IV + eICU-CRD{suffix} CONFIGURATION & ONTOLOGY STANDARDIZATION COMPLETE!")
     return 0
 
 

@@ -5,6 +5,7 @@ import com.datagov.control.entity.ControlEntities.JobDefinition;
 import com.datagov.data.spi.DataSourceType;
 
 import java.util.Map;
+import java.util.Optional;
 
 /**
  * 一种任务的编译器。
@@ -79,5 +80,53 @@ public interface JobCompiler {
          * @return 拿不到数据源时返回 null
          */
         DataSourceType dataSourceType(String workspaceId, String dataSourceId);
+
+        /**
+         * 表里已标注为敏感的字段及其级别(L1~L4)。
+         *
+         * <p>仍是纯读:ETL 编译期据此判断 L3/L4 字段是否未经脱敏就流向 Sink。
+         * 默认返回空 Map —— 实现方拿不到敏感标签时不应让编译失败,只是少一条提醒。
+         *
+         * @return 字段名 → 级别;没有标签或查不到时返回空 Map
+         */
+        default Map<String, String> sensitiveColumnLevels(String workspaceId, String dataSourceId,
+                                                          String database, String schema, String table) {
+            return Map.of();
+        }
+
+        /**
+         * 平台权威码表(Standard type=codeset)。
+         *
+         * <p>落地形态:一个语义对象({@code md_semantic_object},id 或 code 皆可引用)加它的值字典
+         * ({@code md_semantic_value_dict}:原始值 / 同义词 → 标准标签)。仍是纯读,只回答
+         * 「它在不在、什么状态、有多少条目」,<b>不</b>把条目带进编译期 ——
+         * 条目在执行期由 Runner 经装配层解析,保证执行的永远是当时发布的那一版。
+         *
+         * <p>默认返回 empty:没有实现的 Lookup(旧测试桩)下,码表映射节点会被编译器判为「码表不存在」。
+         *
+         * @param ref 码表引用:语义对象 id 或 code
+         */
+        default Optional<CodesetInfo> codeset(String workspaceId, String ref) {
+            return Optional.empty();
+        }
+    }
+
+    /**
+     * 码表的编译期可见信息。
+     *
+     * @param id         语义对象 id(计划里引用它,执行期按 id 解析条目)
+     * @param code       语义对象 code
+     * @param status     DRAFT / PROPOSED / PUBLISHED / DEPRECATED / REJECTED ...
+     * @param entryCount 值字典条目数
+     */
+    record CodesetInfo(String id, String code, String name, String status, long entryCount) {
+
+        public boolean published() {
+            return "PUBLISHED".equalsIgnoreCase(status);
+        }
+
+        public boolean retired() {
+            return "DEPRECATED".equalsIgnoreCase(status) || "REJECTED".equalsIgnoreCase(status);
+        }
     }
 }

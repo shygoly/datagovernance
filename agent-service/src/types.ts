@@ -8,6 +8,17 @@ export interface UiToolStep {
   finishedAt?: string
 }
 
+export type UiBlockComponent =
+  | 'FilterFunnelCard'
+  | 'DistributionProfileCard'
+  | 'RuleDiffProposalCard'
+
+export interface UiBlock {
+  component: UiBlockComponent
+  version: '1'
+  props: Record<string, unknown>
+}
+
 export interface UiTurn {
   id: string
   question: string
@@ -16,6 +27,7 @@ export interface UiTurn {
   text: string
   thinking: string
   tools: UiToolStep[]
+  uiBlocks?: UiBlock[]
   answer?: unknown
   error?: string
   createdAt: string

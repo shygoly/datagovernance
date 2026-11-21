@@ -1,6 +1,7 @@
 package com.datagov.app.insight;
 
 import com.datagov.app.insight.ChartSpecRecommender.ChartSpec;
+import com.datagov.common.audit.ReproducibilityFingerprint;
 import com.datagov.metadata.service.SemanticQueryCompiler.SemanticQuerySpec;
 
 import java.util.List;
@@ -53,7 +54,8 @@ public interface InsightQueryEngine {
             String executionMode,
             String federationEngine,
             List<String> warehousesUsed,
-            List<WarehouseSqlPass> warehouseSqls
+            List<WarehouseSqlPass> warehouseSqls,
+            ReproducibilityFingerprint reproducibilityFingerprint
     ) {
         public EngineAskResult(String queryId, String state, String sql,
                                List<InsightColumn> columns, List<Map<String, Object>> rows,
@@ -66,7 +68,25 @@ public interface InsightQueryEngine {
                                ChartSpec chartSpec) {
             this(queryId, state, sql, columns, rows, summary, error,
                     semanticSnapshotRefs, auditFingerprint, appliedExclusions, clarifications,
-                    executedSpec, chartSpec, null, null, List.of(), List.of());
+                    executedSpec, chartSpec, null, null, List.of(), List.of(), null);
+        }
+
+        public EngineAskResult(String queryId, String state, String sql,
+                               List<InsightColumn> columns, List<Map<String, Object>> rows,
+                               String summary, String error,
+                               List<String> semanticSnapshotRefs,
+                               String auditFingerprint,
+                               List<String> appliedExclusions,
+                               List<ClarificationOption> clarifications,
+                               SemanticQuerySpec executedSpec,
+                               ChartSpec chartSpec,
+                               String executionMode,
+                               String federationEngine,
+                               List<String> warehousesUsed,
+                               List<WarehouseSqlPass> warehouseSqls) {
+            this(queryId, state, sql, columns, rows, summary, error,
+                    semanticSnapshotRefs, auditFingerprint, appliedExclusions, clarifications,
+                    executedSpec, chartSpec, executionMode, federationEngine, warehousesUsed, warehouseSqls, null);
         }
 
         public EngineAskResult(String queryId, String state, String sql,
@@ -78,7 +98,7 @@ public interface InsightQueryEngine {
                                List<ClarificationOption> clarifications) {
             this(queryId, state, sql, columns, rows, summary, error,
                     semanticSnapshotRefs, auditFingerprint, appliedExclusions, clarifications,
-                    null, null, null, null, List.of(), List.of());
+                    null, null, null, null, List.of(), List.of(), null);
         }
 
         public EngineAskResult(String queryId, String state, String sql,
@@ -86,7 +106,7 @@ public interface InsightQueryEngine {
                                String summary, String error) {
             this(queryId, state, sql, columns, rows, summary, error,
                     List.of(), null, List.of(), List.of(), null, null,
-                    null, null, List.of(), List.of());
+                    null, null, List.of(), List.of(), null);
         }
     }
 

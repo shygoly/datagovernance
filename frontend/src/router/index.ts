@@ -37,6 +37,12 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '治理收件箱', permission: 'governance:inbox:read', keepAlive: true },
       },
       {
+        path: 'governance/mapping-proposals',
+        name: 'governance-mapping-proposals',
+        component: () => import('@/views/governance/MappingInboxView.vue'),
+        meta: { title: '映射建议收件箱', permission: 'governance:knowledge:read', keepAlive: true },
+      },
+      {
         path: 'insight/ask',
         name: 'insight-ask',
         component: () => import('@/views/insight/AskView.vue'),
@@ -53,6 +59,12 @@ const routes: RouteRecordRaw[] = [
         name: 'insight-dashboards',
         component: () => import('@/views/insight/DashboardView.vue'),
         meta: { title: '问数看板', permission: 'insight:dashboard:read' },
+      },
+      {
+        path: 'insight/chance',
+        name: 'insight-chance-boards',
+        component: () => import('@/views/insight/ChanceBoardsView.vue'),
+        meta: { title: 'CHANCE 专病看板', permission: 'insight:ask' },
       },
       {
         path: 'metadata/datasources',
@@ -133,6 +145,43 @@ const routes: RouteRecordRaw[] = [
         component: () => import('@/views/integration/JobListView.vue'),
         meta: { title: '任务管理', permission: 'control:job:read' },
       },
+      // 轻量级 ETL 管道(lightweight-etl-pipeline P1-7)。菜单与权限码由 V49 迁移种进后端。
+      // 列表与画布是两条路由:画布要整页高度,且编辑中的状态不该被列表的 keep-alive 缓存。
+      {
+        path: 'integration/etl',
+        name: 'etl-pipelines',
+        component: () => import('@/views/integration/EtlPipelineListView.vue'),
+        meta: { title: 'ETL 管道', permission: 'menu:integration:etl' },
+      },
+      {
+        path: 'integration/etl/:id',
+        name: 'etl-editor',
+        component: () => import('@/views/integration/EtlPipelineEditorView.vue'),
+        meta: {
+          title: 'ETL 画布',
+          permission: 'menu:integration:etl',
+          parentPath: '/integration/etl',
+        },
+      },
+      // ── 数据自治（data-driven-ops-profile P1-11）────────────────────
+      {
+        path: 'autonomy/triggers',
+        name: 'autonomy-triggers',
+        component: () => import('@/views/autonomy/TriggerListView.vue'),
+        meta: { title: '自治触发器', permission: 'autonomy:trigger:read', keepAlive: true },
+      },
+      {
+        path: 'autonomy/flows',
+        name: 'autonomy-flows',
+        component: () => import('@/views/autonomy/FlowListView.vue'),
+        meta: { title: '自治流程', permission: 'autonomy:flow:read', keepAlive: true },
+      },
+      {
+        path: 'autonomy/traces',
+        name: 'autonomy-traces',
+        component: () => import('@/views/autonomy/TraceListView.vue'),
+        meta: { title: '决策轨迹', permission: 'autonomy:trace:read', keepAlive: true },
+      },
       // 规则管理(功能 17)。它的菜单与权限码由 V9 迁移种进后端,routePath 是
       // /integration/rules —— 路由这一条缺失过一阵子,点侧边栏直接落 404。
       {
@@ -193,6 +242,12 @@ const routes: RouteRecordRaw[] = [
         name: 'audit',
         component: () => import('@/views/ops/AuditListView.vue'),
         meta: { title: '审计日志', permission: 'governance:audit:read' },
+      },
+      {
+        path: 'ops/operational-reports',
+        name: 'operational-reports',
+        component: () => import('@/views/ops/OperationalReportView.vue'),
+        meta: { title: '运营报表', permission: 'governance:audit:read' },
       },
       {
         path: 'settings/channels',

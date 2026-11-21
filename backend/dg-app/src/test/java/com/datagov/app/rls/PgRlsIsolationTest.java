@@ -46,7 +46,22 @@ class PgRlsIsolationTest {
             "md_semantic_object_version",
             "md_semantic_value_dict",
             "md_workspace_warehouse",
-            "md_logical_table"
+            "md_logical_table",
+            "md_dataset_profile_run",
+            "md_anchor_event_spec",
+            "md_anchor_alignment_run",
+            "md_anchor_alignment_hit",
+            "gv_clinical_qc_finding",
+            "gv_mapping_proposal",
+            // data-driven-ops-profile（V50/V51）
+            "au_filter_preset",
+            "au_trigger_def",
+            "au_flow_def",
+            "au_flow_version",
+            "au_flow_instance",
+            "au_entity_lock_cooldown",
+            "au_decision_trace",
+            "au_action_execution_counter"
     );
 
     @BeforeAll
@@ -166,6 +181,66 @@ class PgRlsIsolationTest {
                 INSERT INTO md_logical_table (id, workspace_id, warehouse_id, catalog_dataset_id, logical_name, table_role, logical_size)
                 VALUES ('lt_%s', '%s', 'wh_%s', 'cd_%s', 'lt_%s', 'FACT', 100)
                 """.formatted(tag, ws, tag, tag, tag));
+        st.execute("""
+                INSERT INTO md_dataset_profile_run (id, workspace_id, dataset_id, dataset_name, verdict, total_rows, sampled_rows, truncated, anomaly_count, pattern_fingerprint, profile_json, anomalies_json, created_by)
+                VALUES ('dpr_%s', '%s', 'cd_%s', 'ds_%s', 'OK', 100, 100, false, 0, 'pat_%s', '{}', '[]', 'usr_%s')
+                """.formatted(tag, ws, tag, tag, tag, tag));
+        st.execute("""
+                INSERT INTO md_anchor_event_spec (id, workspace_id, code, name, anchor_type, binding_json, window_config_json, standard_ref, status, created_by)
+                VALUES ('anch_%s', '%s', 't0_%s', 'T0-%s', 'INTERVENTIONAL_TACE', '{"anchorTsUrn":"semantic://x"}', '{}', 'STD_CHANCE_HCC_QC_V1', 'ACTIVE', 'usr_%s')
+                """.formatted(tag, ws, tag, tag, tag));
+        st.execute("""
+                INSERT INTO md_anchor_alignment_run (id, workspace_id, operator_id, operator_version, status, anchor_count, hit_count, ambiguous_count, missing_count, created_by)
+                VALUES ('aar_%s', '%s', 'align_to_anchor_v1', '1.0.0', 'COMPLETED', 1, 1, 0, 0, 'usr_%s')
+                """.formatted(tag, ws, tag));
+        st.execute("""
+                INSERT INTO md_anchor_alignment_hit (id, workspace_id, run_id, patient_ref, anchor_id, session_seq, role, status)
+                VALUES ('aah_%s', '%s', 'aar_%s', 'synthea:p_%s', 'a_%s', 1, 'FOLLOWUP', 'MATCHED')
+                """.formatted(tag, ws, tag, tag, tag));
+        st.execute("""
+                INSERT INTO gv_clinical_qc_finding (id, workspace_id, ruleset_ref, rule_id, severity, message, evidence_json, status, created_by)
+                VALUES ('qcf_%s', '%s', 'STD_CHANCE_HCC_QC_V1', 'CNLC_CONFLICT', 'Blocker', 'demo', '{}', 'OPEN', 'usr_%s')
+                """.formatted(tag, ws, tag));
+
+        // ── data-driven-ops-profile（V50）──────────────────────────────
+        st.execute("""
+                INSERT INTO au_filter_preset (id, workspace_id, code, name, preset_type)
+                VALUES ('afp_%s', '%s', 'preset_%s', 'preset-%s', 'SMQ_FILTER')
+                """.formatted(tag, ws, tag, tag));
+        st.execute("""
+                INSERT INTO au_flow_def (id, workspace_id, code, name, status, current_version, run_mode)
+                VALUES ('afl_%s', '%s', 'flow_%s', 'flow-%s', 'PUBLISHED', 1, 'SHADOW')
+                """.formatted(tag, ws, tag, tag));
+        st.execute("""
+                INSERT INTO au_flow_version (id, workspace_id, flow_id, version_no, spec_json, compiled_json, content_digest, run_mode)
+                VALUES ('afv_%s', '%s', 'afl_%s', 1, '{}', '{}', 'digest_%s', 'SHADOW')
+                """.formatted(tag, ws, tag, tag));
+        st.execute("""
+                INSERT INTO au_trigger_def (id, workspace_id, code, name, source_type, condition_json, debounce_sec, flow_id, enabled)
+                VALUES ('atr_%s', '%s', 'trigger_%s', 'trigger-%s', 'ETL_ANOMALY', '{}', 0, 'afl_%s', true)
+                """.formatted(tag, ws, tag, tag, tag));
+        st.execute("""
+                INSERT INTO au_flow_instance (id, workspace_id, flow_id, flow_code, flow_version, status, current_step_id, entity_key, run_mode, plan_json)
+                VALUES ('afi_%s', '%s', 'afl_%s', 'flow_%s', 1, 'RUNNING', 's1', 'entity_%s', 'SHADOW', '{}')
+                """.formatted(tag, ws, tag, tag, tag));
+        st.execute("""
+                INSERT INTO au_entity_lock_cooldown (id, workspace_id, entity_key)
+                VALUES ('aulk_%s', '%s', 'entity_%s')
+                """.formatted(tag, ws, tag));
+        st.execute("""
+                INSERT INTO au_decision_trace (id, workspace_id, trace_id, run_mode, verify_status)
+                VALUES ('atrc_%s', '%s', 'trace_%s', 'SHADOW', 'PENDING')
+                """.formatted(tag, ws, tag));
+        st.execute("""
+                INSERT INTO au_action_execution_counter
+                    (id, workspace_id, action_code, counter_day, execution_count)
+                VALUES ('aec_%s', '%s', 'GENERATE_REPORT', CURRENT_DATE, 1)
+                """.formatted(tag, ws));
+
+        st.execute("""
+                INSERT INTO gv_mapping_proposal (id, workspace_id, source_table, source_field, confidence, transformation_type, evidence_json, routing_tier, suggestion_fingerprint, state, created_by)
+                VALUES ('mpp_%s', '%s', 'cath_int', 'treat_dt', 0.5, 'IDENTITY', '{}', 'standard_hitl_review', 'fp_%s', 'PROPOSED', 'usr_%s')
+                """.formatted(tag, ws, tag, tag));
     }
 
     @Test

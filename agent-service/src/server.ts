@@ -26,6 +26,7 @@ app.get('/health', (_req, res) => {
   res.json({
     ok: true,
     model: agentRuntime.modelId,
+    endpointKind: config.modelEndpointKind,
     dataDir: config.dataDir,
     skills: agentRuntime.skills().map((s) => s.name),
   })

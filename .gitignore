@@ -60,3 +60,6 @@ deploy/supersonic/.env
 deploy/supersonic/supersonic_pg/
 deploy/supersonic/supersonic_db/
 .gstack/
+
+### 本地嵌套仓库/实验副本（防止误提交 20MB 重复工程）###
+datagovernance/

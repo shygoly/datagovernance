@@ -20,15 +20,18 @@ import com.datagov.metadata.mapper.ColumnSensitivityMapper;
 import com.datagov.metadata.mapper.ScanFindingMapper;
 import com.datagov.metadata.mapper.ScanRunMapper;
 import com.datagov.metadata.mapper.SensitivityRuleMapper;
+import com.datagov.metadata.service.lineage.LineageSensitivityPropagator;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -58,6 +61,8 @@ public class SensitivityService {
     private final CatalogDatasetMapper datasetMapper;
     private final CatalogColumnMapper columnMapper;
     private final ObjectMapper objectMapper;
+    /** 可空：单测或不关心血缘传播时不装配。 */
+    private final LineageSensitivityPropagator lineagePropagator;
 
     public SensitivityService(SensitivityRuleMapper ruleMapper,
                               ColumnSensitivityMapper sensitivityMapper,
@@ -66,6 +71,20 @@ public class SensitivityService {
                               CatalogDatasetMapper datasetMapper,
                               CatalogColumnMapper columnMapper,
                               ObjectMapper objectMapper) {
+        this(ruleMapper, sensitivityMapper, scanRunMapper, scanFindingMapper, datasetMapper,
+                columnMapper, objectMapper, null);
+    }
+
+    @Autowired
+    public SensitivityService(SensitivityRuleMapper ruleMapper,
+                              ColumnSensitivityMapper sensitivityMapper,
+                              ScanRunMapper scanRunMapper,
+                              ScanFindingMapper scanFindingMapper,
+                              CatalogDatasetMapper datasetMapper,
+                              CatalogColumnMapper columnMapper,
+                              ObjectMapper objectMapper,
+                              LineageSensitivityPropagator lineagePropagator) {
+        this.lineagePropagator = lineagePropagator;
         this.ruleMapper = ruleMapper;
         this.sensitivityMapper = sensitivityMapper;
         this.scanRunMapper = scanRunMapper;
@@ -434,6 +453,7 @@ public class SensitivityService {
                                 .in(ColumnSensitivity::getId, ids)).stream()
                 .collect(java.util.stream.Collectors.toMap(ColumnSensitivity::getId, value -> value));
         List<BatchFailure> failures = new ArrayList<>();
+        Set<String> confirmedColumnIds = new LinkedHashSet<>();
         int succeeded = 0;
         for (String id : ids) {
             ColumnSensitivity value = labelsById.get(id);
@@ -448,8 +468,12 @@ public class SensitivityService {
             value.setReviewedBy(WorkspaceContext.require().userId());
             value.setReviewedAt(Instant.now());
             sensitivityMapper.updateById(value);
+            if ("CONFIRMED".equals(status)) {
+                confirmedColumnIds.add(value.getColumnId());
+            }
             succeeded++;
         }
+        confirmedColumnIds.forEach(columnId -> propagateAlongLineage(workspaceId, columnId));
         return new BatchReviewResult(ids.size(), succeeded, failures.size(), failures);
     }
 
@@ -480,6 +504,9 @@ public class SensitivityService {
         value.setReviewedBy(WorkspaceContext.require().userId());
         value.setReviewedAt(Instant.now());
         sensitivityMapper.updateById(value);
+        if ("CONFIRMED".equals(value.getStatus())) {
+            propagateAlongLineage(workspaceId, value.getColumnId());
+        }
 
         CatalogColumn column = columnMapper.selectOne(new LambdaQueryWrapper<CatalogColumn>()
                 .eq(CatalogColumn::getId, value.getColumnId()));
@@ -491,6 +518,21 @@ public class SensitivityService {
     }
 
     // ── 工具 ────────────────────────────────────────────────────────────
+
+    /**
+     * 标签被确认后沿血缘向下游生成 SUGGESTED(仅 L3/L4，由传播器判定)。
+     * 传播是复核的衍生动作，失败只记日志，不能让人工复核结论回滚。
+     */
+    private void propagateAlongLineage(String workspaceId, String columnId) {
+        if (lineagePropagator == null) {
+            return;
+        }
+        try {
+            lineagePropagator.propagateFromConfirmedLabel(workspaceId, columnId);
+        } catch (RuntimeException ex) {
+            log.warn("敏感标签血缘传播失败 workspace={} column={}", workspaceId, columnId, ex);
+        }
+    }
 
     private String writeJson(Object value) {
         try {

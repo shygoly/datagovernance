@@ -1,0 +1,10 @@
+{
+  "id": "g07_empty_query",
+  "kind": "gate",
+  "dialect": "POSTGRESQL",
+  "metrics": [],
+  "dimensions": [],
+  "allowed_datasets": ["ds1"],
+  "max_rows": 200,
+  "expect_error": "EMPTY_QUERY"
+}

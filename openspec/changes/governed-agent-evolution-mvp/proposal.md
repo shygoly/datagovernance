@@ -1,7 +1,7 @@
 # Proposal: 受治理的语义探索、确定性剖析与智能体受控演进闭环（MVP）
 
 - **Change ID**: `governed-agent-evolution-mvp`
-- **Status**: Draft（待拆解 `specs/`、`design.md` 与 `tasks.md`）
+- **Status**: Implemented（已补齐 `tasks.md`、后端/Agent/前端实现与回归门禁验证）
 - **Constitution Alignment**: 严格遵循根目录 `CONSTITUTION.md`（C1–C10）与 `AGENT-PRIMITIVES.md`（A0.1–A0.4）
 
 ---

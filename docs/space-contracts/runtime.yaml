@@ -22,6 +22,15 @@ space:
     - FlinkJob
     - K8sJob
     - RuleInterpreter        # 序号17 执行侧
+    - ClinicalStatsRuntime   # 确定性临床/统计算子沙箱执行面（禁止由 metadata SQL 编译器内嵌）
+    - ClinicalOperatorResult # 算子输出制品/表引用 + operatorDigest
+    # 数据自治持久化执行(data-driven-ops-profile)
+    - DurableFlowEngine      # SPI: PG 默认 / Temporal / Restate 可替换
+    - FlowInstance           # checkpoint / current_step / wake_at / trace_id
+    - EntityLockCooldown     # 实体在途锁 + 冷却期(唯一索引兜底)
+    - FlowActivity           # 无状态原子 Activity(dry-run + execute + compensate)
+    - FlowObserver           # 向 Governance 投影证据,不反向依赖
+    - FlowVerifyObservationProvider # T+1 after-metrics SPI(ETL/质检事件源可插拔)
 
   execution_job_ref_types:
     - MIGRATION            # 序号9/10
@@ -39,6 +48,7 @@ space:
     Execution: [PENDING, DISPATCHED, RUNNING, CANCELING, SUCCEEDED, FAILED, CANCELED, TIMEOUT]
     StreamingJob: [STARTING, RUNNING, RESTARTING, STOPPING, STOPPED, FAILED]
     Executor: [REGISTERED, HEALTHY, DRAINING, UNHEALTHY, REMOVED]
+    FlowInstance: [RUNNING, WAITING_APPROVAL, WAITING_VERIFY, COMPENSATING, COMPLETED, SHADOW_COMPLETED, FAILED, CANCELLED, COMPENSATION_FAILED]
 
   commands:
     - DispatchExecution
@@ -59,6 +69,9 @@ space:
     - ListExecutors
     - GetExecutorLoad
     - ListArtifacts
+    - InspectFlowInstance
+    - SweepDueFlowInstances
+    - CancelActiveFlowInstances
 
   events_produced:
     - ExecutionAccepted
@@ -73,6 +86,12 @@ space:
     - ExecutorUnhealthy
     - ArtifactUploaded
     - ConnectivityProbeCompleted
+    - FlowInstanceStarted
+    - FlowStepCompleted
+    - FlowWaiting
+    - FlowCompleted
+    - FlowFailed
+    - FlowCompensated
 
   events_consumed: []
 
@@ -115,6 +134,7 @@ space:
     - 不得自行决定是否重试
     - 不得直接向用户发告警
     - 不得让 Flink 的类型/异常/JobID 语义穿透到 control 之上
+    - ClinicalStatsRuntime 仅执行已登记版本的 ClinicalOperator；不得即席发明评分口径或改写语义定义
 
   api_boundary: REST /api/v1/runtime/**  + Kafka execution.*
   consistency: 执行事实最终一致;单个 Execution 状态迁移在本地事务内强一致

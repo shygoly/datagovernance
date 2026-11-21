@@ -164,4 +164,127 @@ class AgentToolControllerTest {
         verify(permissionService).resolvePermissions(USER_ID, WORKSPACE_ID);
         verify(queryService).ask(any());
     }
+
+    @Test
+    @DisplayName("C5：含 L3 敏感字段的数据集禁止路由至 EXTERNAL 外部模型，SELF_HOSTED 放行")
+    void modelRoutingGuardrailBlocksExternalForL3AndAllowsSelfHosted() {
+        var sensitivityMapper = mock(com.datagov.metadata.mapper.ColumnSensitivityMapper.class);
+        var l3 = new com.datagov.metadata.entity.SensitivityEntities.ColumnSensitivity();
+        l3.setDatasetId("cd_patient");
+        l3.setLevel("L3");
+        l3.setStatus("CONFIRMED");
+        when(sensitivityMapper.selectList(any())).thenReturn(java.util.List.of(l3));
+
+        AgentToolController guarded = new AgentToolController(
+                queryService, dataSourceService, catalogAssetService,
+                permissionService, workspaceService, mock(AuditService.class), new ObjectMapper(),
+                null, null, null, null, null, null, null, null, sensitivityMapper);
+        ReflectionTestUtils.setField(guarded, "agentToken", TOKEN);
+        when(permissionService.resolvePermissions(USER_ID, WORKSPACE_ID))
+                .thenReturn(Set.of("insight:ask"));
+
+        assertThatThrownBy(() -> guarded.checkModelRouting(
+                TOKEN, USER_ID, USERNAME, WORKSPACE_ID, false, "EXTERNAL",
+                new AgentToolController.ModelRoutingCheckRequest("cd_patient", "EXTERNAL", false)))
+                .isInstanceOf(BizException.class)
+                .satisfies(ex -> assertThat(((BizException) ex).errorCode().code())
+                        .isEqualTo("GOV_MODEL_ROUTING_BLOCKED"));
+
+        var allowed = guarded.checkModelRouting(
+                TOKEN, USER_ID, USERNAME, WORKSPACE_ID, false, "SELF_HOSTED",
+                new AgentToolController.ModelRoutingCheckRequest("cd_patient", "SELF_HOSTED", true));
+        assertThat(allowed.data().allowed()).isTrue();
+        assertThat(allowed.data().maxSensitivity()).isEqualTo("L3");
+    }
+
+    // ── 只读血缘工具（column-lineage-e2e P3-3）──────────────────────────
+
+    @Test
+    @DisplayName("P3-3：lineage_trace_column 无 metadata:lineage:read 权限时拒绝，不触达血缘服务")
+    void lineageTraceRejectsWithoutPermission() {
+        var lineageTools = mock(com.datagov.metadata.service.lineage.LineageAgentToolService.class);
+        ReflectionTestUtils.setField(controller, "lineageAgentService", lineageTools);
+        when(permissionService.resolvePermissions(USER_ID, WORKSPACE_ID))
+                .thenReturn(Set.of("insight:ask"));
+
+        assertThatThrownBy(() -> controller.traceLineageColumn(
+                TOKEN, USER_ID, USERNAME, WORKSPACE_ID, false, "col_1", "both", 3, false))
+                .isInstanceOf(BizException.class)
+                .satisfies(ex -> assertThat(((BizException) ex).errorCode().code())
+                        .isEqualTo("PLT_FORBIDDEN"));
+
+        verify(workspaceService).requireAccess(USER_ID, WORKSPACE_ID);
+        verify(lineageTools, never()).traceColumn(any(), any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("P3-3：lineage_impact_analysis 缺少 userId 上下文时拒绝（C4，无合成服务账号）")
+    void lineageImpactRejectsMissingUserId() {
+        var lineageTools = mock(com.datagov.metadata.service.lineage.LineageAgentToolService.class);
+        ReflectionTestUtils.setField(controller, "lineageAgentService", lineageTools);
+
+        assertThatThrownBy(() -> controller.lineageImpactAnalysis(
+                TOKEN, null, USERNAME, WORKSPACE_ID, false, "col_1", null, 5, false, true))
+                .isInstanceOf(BizException.class)
+                .satisfies(ex -> assertThat(((BizException) ex).errorCode().code())
+                        .isEqualTo("SYS_VALIDATION_FAILED"));
+
+        verify(lineageTools, never()).impactAnalysis(any(), any(), any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("P3-3：合法成员调用时，血缘服务在该用户的 WorkspaceContext 下执行，结束后上下文被清理")
+    void lineageToolsRunUnderRealUserContext() {
+        var lineageTools = mock(com.datagov.metadata.service.lineage.LineageAgentToolService.class);
+        ReflectionTestUtils.setField(controller, "lineageAgentService", lineageTools);
+        when(permissionService.resolvePermissions(USER_ID, WORKSPACE_ID))
+                .thenReturn(Set.of("metadata:lineage:read"));
+        var seen = new java.util.concurrent.atomic.AtomicReference<com.datagov.common.tenant.Caller>();
+        when(lineageTools.traceColumn(any(), any(), any(), any())).thenAnswer(invocation -> {
+            seen.set(com.datagov.common.tenant.WorkspaceContext.require());
+            return new com.datagov.metadata.service.lineage.LineageAgentToolService.TraceResult(
+                    "INCONCLUSIVE", "NO_LINEAGE_EVIDENCE", null, "col_1", "both", 3, false,
+                    null, java.util.List.of(), java.util.List.of(), 0, false, false);
+        });
+
+        var response = controller.traceLineageColumn(
+                TOKEN, USER_ID, USERNAME, WORKSPACE_ID, false, "col_1", "both", 3, false);
+
+        assertThat(response.data().status()).isEqualTo("INCONCLUSIVE");
+        assertThat(seen.get().userId()).isEqualTo(USER_ID);
+        assertThat(seen.get().workspaceId()).isEqualTo(WORKSPACE_ID);
+        assertThat(seen.get().hasPermission("metadata:lineage:read")).isTrue();
+        assertThat(com.datagov.common.tenant.WorkspaceContext.get()).isNull();
+    }
+
+    @Test
+    @DisplayName("P3-3：Hop-by-Hop ACL 端到端——有血缘读权限但无 metadata:asset:read 的用户拿到 INCONCLUSIVE，不泄露任何名称")
+    void lineageImpactAppliesHopByHopAclForRealUser() {
+        var nodeMapper = mock(com.datagov.metadata.mapper.LineageNodeMapper.class);
+        var datasetMapper = mock(com.datagov.metadata.mapper.CatalogDatasetMapper.class);
+        var node = new com.datagov.metadata.entity.LineageEntities.LineageNode();
+        node.setId("lin_secret");
+        node.setWorkspaceId(WORKSPACE_ID);
+        node.setNodeType("COLUMN");
+        node.setQualifiedName("hr.payroll.salary");
+        node.setCatalogDatasetId("ds_secret");
+        node.setCatalogColumnId("col_secret");
+        when(nodeMapper.selectList(any())).thenReturn(java.util.List.of(node));
+        when(datasetMapper.selectList(any())).thenReturn(java.util.List.of());
+        var lineage = new com.datagov.metadata.service.LineageService(
+                nodeMapper, mock(com.datagov.metadata.mapper.LineageJobMapper.class),
+                mock(com.datagov.metadata.mapper.LineageEdgeMapper.class), datasetMapper,
+                new com.datagov.app.lineage.DatasetPermissionLineageAclEvaluator(datasetMapper), null, null);
+        ReflectionTestUtils.setField(controller, "lineageAgentService",
+                new com.datagov.metadata.service.lineage.LineageAgentToolService(lineage));
+        when(permissionService.resolvePermissions(USER_ID, WORKSPACE_ID))
+                .thenReturn(Set.of("metadata:lineage:read"));
+
+        var response = controller.lineageImpactAnalysis(
+                TOKEN, USER_ID, USERNAME, WORKSPACE_ID, false, "col_secret", null, 5, false, true);
+
+        assertThat(response.data().status()).isEqualTo("INCONCLUSIVE");
+        assertThat(response.data().reason()).isEqualTo("ROOT_RESTRICTED");
+        assertThat(response.data().toString()).doesNotContain("payroll", "salary", "ds_secret");
+    }
 }

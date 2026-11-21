@@ -27,10 +27,18 @@ space:
     - RetryPolicy
     - ResourceRequirement
     - ConnectivityProbeSchedule  # 序号6 周期检查开关
+    # 数据自治控制环(data-driven-ops-profile)
+    - TriggerSpec                # METRIC_THRESHOLD / QUALITY_FAILURE / ETL_ANOMALY / DATA_ARRIVAL
+    - FlowSpec                   # flow.ir/v1 声明式控制环
+    - FlowCompiler               # 存在性/C6 包络/补偿/防震荡/灰度静态闸门
+    - FlowDefinition             # 版本化定义与 run_mode
+    - Arbiter                    # 硬不变量 → 实体锁/冷却 → 冲突升级 L2
 
   states:
     Schedule: [BOUND, ACTIVE, PAUSED, EXPIRED]
     CompileResult: [SUCCEEDED, FAILED]
+    FlowDefinition: [DRAFT, PUBLISHED, DEPRECATED]
+    FlowRunMode: [SHADOW, L2_ASSISTED, L1_AUTO]
 
   compile_chain:
     - SchemaValidation           # 源表/目标表字段是否存在、类型是否兼容
@@ -53,6 +61,13 @@ space:
     - Backfill
     - EnableConnectivityProbe    # 序号6
     - DisableConnectivityProbe
+    - SaveFlowSpec               # 编译并追加 Flow 版本(新流程/变更强制 SHADOW)
+    - PublishFlowSpec
+    - PromoteFlowRunMode         # SHADOW → L2_ASSISTED → L1_AUTO(需 DecisionTrace 证据)
+    - DemoteAllFlowsToShadow     # Kill Switch
+    - UpsertTriggerSpec
+    - EvaluateTrigger            # 确定性求值(可 dry-run)
+    - FireTrigger                # 求值并启动 DurableFlow
 
   commands_issued:
     - DispatchExecution          # → runtime
@@ -67,6 +82,10 @@ space:
     - GetScheduleState
     - ListUpcomingTriggers
     - GetDependencyGraph
+    - GetFlowSpec
+    - ListFlowVersions
+    - ListTriggerSpecs
+    - GetArbiterDecision
 
   events_produced:
     - CompileSucceeded
@@ -75,6 +94,12 @@ space:
     - ExecutionDispatched
     - DispatchRejected           # 无可用执行器/配额不足 —— 必须显式,否则"没跑"这件事静默丢失
     - StreamingSupervisionEscalated
+    - EtlExecutionCompleted        # 轻量 ETL 管道执行结束(行数 + 脏数据率,不含行内容);供自治 Trigger 订阅
+    - EtlWatermarkReset            # ETL 水位线被人工重置(重抽/漏抽风险),审计落库
+    - FlowCompiled                 # FlowSpec 通过静态闸门并生成版本
+    - FlowPublished
+    - FlowPromoted                 # 灰度晋升(附 DecisionTrace 证据引用)
+    - TriggerFired                 # 触发器命中,进入 Arbiter
 
   events_consumed:
     - ExecutionSucceeded

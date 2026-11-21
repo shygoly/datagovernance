@@ -42,7 +42,10 @@ public enum JobType {
      *
      * <p>可调度:预标注通常是"每天把新进来的影像跑一遍"。
      */
-    PYTHON_JOB("Python 任务", JobRefType.PYTHON_JOB, true);
+    PYTHON_JOB("Python 任务", JobRefType.PYTHON_JOB, true),
+
+    /** 轻量级 ETL 管道（声明式 etl.ir/v1 + DuckDB） */
+    ETL_PIPELINE("ETL 管道", JobRefType.ETL_PIPELINE, true);
 
     private final String displayName;
     private final JobRefType runtimeType;

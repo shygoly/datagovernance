@@ -3,6 +3,8 @@ package com.datagov.app.web;
 import com.datagov.common.api.ApiResponse;
 import com.datagov.common.error.BizException;
 import com.datagov.common.error.ErrorCode;
+import com.datagov.metadata.service.gate.CompileReject;
+import com.datagov.metadata.service.gate.CompileRejectException;
 import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -33,6 +35,24 @@ import java.util.stream.Collectors;
 public class GlobalExceptionHandler {
 
     private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
+
+    @ExceptionHandler(CompileRejectException.class)
+    public ResponseEntity<ApiResponse<CompileReject>> handleCompileReject(
+            CompileRejectException ex, HttpServletRequest request) {
+        String traceId = newTraceId();
+        CompileReject reject = ex.reject();
+        String semanticCode = reject == null || reject.errorCode() == null || reject.errorCode().isBlank()
+                ? ErrorCode.MTD_SEMANTIC_COMPILE_FAILED.code()
+                : reject.errorCode();
+        String message = reject == null ? ex.getMessage() : reject.message();
+        if (reject != null && reject.repairHint() != null && !reject.repairHint().isBlank()) {
+            message = message + " | 修复建议: " + reject.repairHint();
+        }
+        log.warn("[{}] {} {} -> CompileReject {}: {}", traceId, request.getMethod(),
+                request.getRequestURI(), semanticCode, message);
+        return ResponseEntity.status(ErrorCode.MTD_SEMANTIC_COMPILE_FAILED.httpStatus())
+                .body(ApiResponse.fail(semanticCode, message, reject, traceId));
+    }
 
     @ExceptionHandler(BizException.class)
     public ResponseEntity<ApiResponse<Void>> handleBiz(BizException ex, HttpServletRequest request) {

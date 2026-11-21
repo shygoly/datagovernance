@@ -4,6 +4,7 @@ import * as echarts from 'echarts/core'
 import { GraphChart } from 'echarts/charts'
 import { TooltipComponent } from 'echarts/components'
 import { CanvasRenderer } from 'echarts/renderers'
+import { GOVERNANCE_NODE_TYPES } from '@/types/lineage'
 import type { LineageEdge, LineageLayoutNode } from '@/types/lineage'
 import { shortLineageLabel } from '@/utils/lineage'
 
@@ -11,15 +12,18 @@ const props = withDefaults(defineProps<{
   layout: LineageLayoutNode[]
   edges: LineageEdge[]
   selectedId?: string
+  /** 当前选中的连线 ID，用于高亮。 */
+  selectedEdgeId?: string
   height?: number
   showEdgeLabels?: boolean
 }>(), {
   selectedId: '',
+  selectedEdgeId: '',
   height: 560,
   showEdgeLabels: false,
 })
 
-const emit = defineEmits<{ select: [id: string] }>()
+const emit = defineEmits<{ select: [id: string]; selectEdge: [id: string] }>()
 
 echarts.use([GraphChart, TooltipComponent, CanvasRenderer])
 
@@ -129,7 +133,9 @@ function tooltipFormatter(params: any): string {
     return [
       `<b>${escapeHtml(data.relation || 'DERIVE')}</b>`,
       `<div>${escapeHtml(data.origin || 'AUTO')} · 置信度 ${escapeHtml(data.confidence ?? '-')}</div>`,
+      data.status === 'PLANNED' ? '<div>预估（尚未执行确认）</div>' : '',
       transform,
+      '<div>点击连线查看详情</div>',
     ].join('')
   }
   return [
@@ -175,7 +181,7 @@ function seriesData(palette: ReturnType<typeof chartPalette>) {
       name: node.shortName,
       x: node.x,
       y: node.y,
-      symbol: node.nodeType === 'COLUMN' ? 'circle' : 'roundRect',
+      symbol: node.nodeType === 'COLUMN' ? 'circle' : GOVERNANCE_NODE_TYPES.includes(node.nodeType) ? 'diamond' : 'roundRect',
       symbolSize: largeGraph
         ? root ? 40 : 22
         : root ? 58 : node.nodeType === 'COLUMN' ? 44 : 52,
@@ -203,31 +209,39 @@ function seriesData(palette: ReturnType<typeof chartPalette>) {
 }
 
 function seriesLinks() {
-  const textColor = cssVar('--dg-text-secondary', '#606266')
-  const backgroundColor = cssVar('--dg-surface', '#ffffff')
-  return visibleEdges.value.map((edge) => ({
-    source: edge.fromNodeId,
-    target: edge.toNodeId,
-    relation: edge.relation,
-    transformExpr: edge.transformExpr,
-    confidence: edge.confidence,
-    origin: edge.origin,
-    label: {
-      show: props.showEdgeLabels,
-      formatter: edge.transformExpr || edge.relation,
-      fontSize: 10,
-      color: textColor,
-      backgroundColor,
-      padding: [2, 4],
-      borderRadius: 3,
-    },
-    lineStyle: {
-      color: 'source',
-      width: 1.2,
-      opacity: 0.62,
-      curveness: 0.08,
-    },
-  }))
+  const textColor = cssVar('--dg-text-secondary', '')
+  const backgroundColor = cssVar('--dg-surface', '')
+  const primary = cssVar('--dg-primary', '')
+  return visibleEdges.value.map((edge) => {
+    const selected = !!props.selectedEdgeId && edge.id === props.selectedEdgeId
+    const planned = (edge.status || '').toUpperCase() === 'PLANNED'
+    return {
+      source: edge.fromNodeId,
+      target: edge.toNodeId,
+      edgeId: edge.id,
+      status: edge.status,
+      relation: edge.relation,
+      transformExpr: edge.transformExpr,
+      confidence: edge.confidence,
+      origin: edge.origin,
+      label: {
+        show: props.showEdgeLabels,
+        formatter: edge.transformExpr || edge.relation,
+        fontSize: 10,
+        color: textColor,
+        backgroundColor,
+        padding: [2, 4],
+        borderRadius: 3,
+      },
+      lineStyle: {
+        color: selected && primary ? primary : 'source',
+        width: selected ? 3 : 1.2,
+        opacity: selected ? 1 : planned ? 0.45 : 0.62,
+        type: planned ? 'dashed' : 'solid',
+        curveness: 0.08,
+      },
+    }
+  })
 }
 
 function render(resetView = true) {
@@ -245,6 +259,8 @@ function render(resetView = true) {
     chart.on('click', (params: any) => {
       if (params.dataType === 'node' && params.data?.id) {
         emit('select', String(params.data.id))
+      } else if (params.dataType === 'edge' && params.data?.edgeId) {
+        emit('selectEdge', String(params.data.edgeId))
       }
     })
   }
@@ -335,7 +351,7 @@ watch(
 )
 
 watch(
-  () => props.selectedId,
+  [() => props.selectedId, () => props.selectedEdgeId],
   async () => {
     await nextTick()
     render(false)
@@ -368,7 +384,7 @@ onBeforeUnmount(() => {
         <el-button @click="zoomBy(0.8)">缩小</el-button>
         <el-button @click="resetView">重置</el-button>
       </el-button-group>
-      <span class="lineage-graph__hint">滚轮缩放 · 拖拽画布 · 点击节点查看详情</span>
+      <span class="lineage-graph__hint">滚轮缩放 · 拖拽画布 · 点击节点或连线查看详情</span>
     </div>
     <div ref="chartEl" class="lineage-graph__canvas" :style="{ height: `${height}px` }" />
   </div>

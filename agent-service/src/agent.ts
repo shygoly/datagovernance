@@ -8,6 +8,7 @@ import { loadSkills, renderSkillIndex, type SkillDefinition } from './skills.js'
 import { ConversationStore } from './store.js'
 import { startGenAiSpan, type GenAiSpanHandle } from './telemetry.js'
 import { buildTools } from './tools.js'
+import { validateUiBlock } from './uiBlocks.js'
 import type { Conversation, RunContext, UiToolStep, UiTurn } from './types.js'
 
 const models = createModels()
@@ -107,6 +108,17 @@ export async function runTurn(
     },
     onConsentRequired(proposal) {
       emit('consent_required', { proposal })
+    },
+    onUiBlock(rawBlock) {
+      const validated = validateUiBlock(rawBlock)
+      if (!validated) {
+        return
+      }
+      if (!turn.uiBlocks) {
+        turn.uiBlocks = []
+      }
+      turn.uiBlocks.push(validated)
+      emit('ui_block', { block: validated })
     },
   })
 
@@ -232,12 +244,14 @@ export async function runTurn(
             sql: null,
           }
         }
+        const compileReject = (event.result?.details as { compileReject?: unknown } | undefined)?.compileReject
         emit('tool_end', {
           toolCallId: event.toolCallId,
           name: event.toolName,
           isError: event.isError,
           summary: step?.summary,
           answer: turn.answer,
+          compileReject: compileReject ?? undefined,
         })
         break
       }
@@ -275,6 +289,7 @@ export async function runTurn(
           status: turn.status,
           text: turn.text,
           answer: turn.answer,
+          uiBlocks: turn.uiBlocks,
           error: turn.error,
           traceId: rootSpan.traceId,
         })
@@ -354,6 +369,12 @@ function contentText(content: any): string {
 }
 
 function toolSummary(result: any): string {
+  if (result?.details?.compileReject) {
+    const r = result.details.compileReject
+    const code = r.errorCode || r.error_code || 'COMPILE_REJECT'
+    const hint = r.repairHint || r.repair_hint
+    return hint ? `${code}: ${r.message || ''} | 修复: ${hint}` : `${code}: ${r.message || '编译拒绝'}`
+  }
   if (result?.details?.summary) {
     return String(result.details.summary)
   }

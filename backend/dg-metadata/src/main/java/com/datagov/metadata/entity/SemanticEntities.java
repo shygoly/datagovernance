@@ -41,7 +41,7 @@ public final class SemanticEntities {
         private String aiContextJson;
         /** L1 / L2 / L3 / L4 */
         private String maxSensitivity;
-        /** DRAFT / PROPOSED / PUBLISHED / DEPRECATED / REJECTED */
+        /** DRAFT / PROPOSED / STALE_REVIEW / PUBLISHED / DEPRECATED / REJECTED */
         private String status;
         private Integer versionNo;
         private Instant validFrom;
@@ -53,6 +53,11 @@ public final class SemanticEntities {
         private String rejectionReason;
         private String publishedBy;
         private Instant publishedAt;
+        /** 字段级 Provenance JSON（metric-6d） */
+        private String provenanceJson;
+        /** 四层验证摘要 JSON（metric-6d） */
+        private String verifiedJson;
+        private Boolean requiresHumanReview;
         private Instant createdAt;
         private String createdBy;
         private Instant updatedAt;
@@ -114,6 +119,8 @@ public final class SemanticEntities {
         private String rejectionReason;
         private Instant validFrom;
         private Instant validTo;
+        /** 引用目标 content_digest 快照（G5） */
+        private String targetContentHash;
         private Instant createdAt;
         private String createdBy;
         private Instant updatedAt;

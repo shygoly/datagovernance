@@ -78,6 +78,10 @@ public class GovernedFactService {
     }
 
     public GovernedFact propose(ProposeFactCommand cmd) {
+        return propose(cmd, null);
+    }
+
+    public GovernedFact propose(ProposeFactCommand cmd, String patternFingerprint) {
         Caller caller = WorkspaceContext.require();
         if (cmd == null) {
             throw new BizException(ErrorCode.SYS_VALIDATION_FAILED, "提案内容必填");
@@ -127,6 +131,7 @@ public class GovernedFactService {
         entity.setVersion(version);
         entity.setSupersedesId(blank(cmd.supersedesId()) ? null : cmd.supersedesId().trim());
         entity.setState(STATE_PROPOSED);
+        entity.setPatternFingerprint(blank(patternFingerprint) ? null : patternFingerprint.trim());
         entity.setValidFrom(cmd.validFrom() == null ? now : cmd.validFrom());
         entity.setValidTo(null);
         entity.setTxRecordedAt(now);
@@ -139,6 +144,30 @@ public class GovernedFactService {
                 AuditService.CREATE, "GOVERNED_FACT", entity.getId(), title, "GOVERNANCE",
                 true, null, "写入暂存区 PROPOSED（feedback=" + feedbackSource + "）", "learn"));
         return entity;
+    }
+
+    /** 检索某异常模式指纹是否已被人工驳回（驳回防重提负反馈抑制，C9）。 */
+    public boolean isPatternRejected(String workspaceId, String patternFingerprint) {
+        if (blank(workspaceId) || blank(patternFingerprint)) {
+            return false;
+        }
+        Long count = mapper.selectCount(new LambdaQueryWrapper<GovernedFact>()
+                .eq(GovernedFact::getWorkspaceId, workspaceId)
+                .eq(GovernedFact::getPatternFingerprint, patternFingerprint.trim())
+                .eq(GovernedFact::getState, STATE_REJECTED));
+        return count != null && count > 0;
+    }
+
+    /** 检索某异常模式指纹是否已存在待审或已通过提案，避免重复刷屏。 */
+    public boolean hasActiveProposalForPattern(String workspaceId, String patternFingerprint) {
+        if (blank(workspaceId) || blank(patternFingerprint)) {
+            return false;
+        }
+        Long count = mapper.selectCount(new LambdaQueryWrapper<GovernedFact>()
+                .eq(GovernedFact::getWorkspaceId, workspaceId)
+                .eq(GovernedFact::getPatternFingerprint, patternFingerprint.trim())
+                .in(GovernedFact::getState, List.of(STATE_PROPOSED, STATE_APPROVED)));
+        return count != null && count > 0;
     }
 
     /**
@@ -223,6 +252,7 @@ public class GovernedFactService {
         fact.setReviewedBy(caller.userId());
         fact.setReviewedAt(now);
         fact.setReviewNote(reason);
+        fact.setRejectionReason(reason);
         fact.setUpdatedAt(now);
         mapper.updateById(fact);
 

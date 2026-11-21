@@ -276,7 +276,8 @@ public class NativeInsightEngine implements InsightQueryEngine {
                         queryId, "SUCCESS", compiled.sql(), execCols, mappedRows,
                         summary, null, compiled.semanticSnapshotRefs(),
                         compiled.auditFingerprint(), compiled.appliedExclusions(), List.of(),
-                        spec, chartSpec);
+                        spec, chartSpec, null, null, List.of(), List.of(),
+                        compiled.reproducibilityFingerprint());
             } catch (Exception ex) {
                 log.warn("原生引擎执行数据源 {} 查询失败，回退返回确定性编译结果: {}", dataSourceId, ex.getMessage());
                 ChartSpec chartSpec = chartRecommender.recommend(
@@ -286,7 +287,8 @@ public class NativeInsightEngine implements InsightQueryEngine {
                         "已完成确定性语义编译（数据源暂不可达：" + ex.getMessage() + "），可在预览区核验 SQL 与审计指纹。",
                         null, compiled.semanticSnapshotRefs(),
                         compiled.auditFingerprint(), compiled.appliedExclusions(), List.of(),
-                        spec, chartSpec);
+                        spec, chartSpec, null, null, List.of(), List.of(),
+                        compiled.reproducibilityFingerprint());
             }
         }
 
@@ -298,7 +300,8 @@ public class NativeInsightEngine implements InsightQueryEngine {
                 queryId, "COMPILED_ONLY", compiled.sql(), cols, List.of(),
                 summary, null, compiled.semanticSnapshotRefs(),
                 compiled.auditFingerprint(), compiled.appliedExclusions(), List.of(),
-                spec, chartSpec);
+                spec, chartSpec, null, null, List.of(), List.of(),
+                compiled.reproducibilityFingerprint());
     }
 
     // ── Multi-Warehouse & Federated Execution ───────────────────────────
@@ -342,7 +345,8 @@ public class NativeInsightEngine implements InsightQueryEngine {
                         "单仓确定性路由（" + sub.warehouseName() + "）查询完成，返回 " + rows.size() + " 条结果。",
                         null, plan.semanticSnapshotRefs(), plan.auditFingerprint(),
                         plan.appliedExclusions(), List.of(), spec, chartSpec,
-                        plan.mode().name(), plan.federationEngine(), whNames, sqlPasses);
+                        plan.mode().name(), plan.federationEngine(), whNames, sqlPasses,
+                        plan.reproducibilityFingerprint());
             } catch (Exception ex) {
                 log.warn("多仓单路执行失败 warehouse={}: {}", sub.warehouseCode(), ex.getMessage());
             }
@@ -354,7 +358,8 @@ public class NativeInsightEngine implements InsightQueryEngine {
                 "已完成单仓确定性语义编译（" + sub.warehouseName() + " 数据源暂不可达），可核验 SQL 与审计指纹。",
                 null, plan.semanticSnapshotRefs(), plan.auditFingerprint(),
                 plan.appliedExclusions(), List.of(), spec, chartSpec,
-                plan.mode().name(), plan.federationEngine(), whNames, sqlPasses);
+                plan.mode().name(), plan.federationEngine(), whNames, sqlPasses,
+                        plan.reproducibilityFingerprint());
     }
 
     private EngineAskResult executeCohortUnion(String queryId,
@@ -400,7 +405,8 @@ public class NativeInsightEngine implements InsightQueryEngine {
                             + "），按 CONSTITUTION C8 拒绝拼装不完整结果，已输出各仓确定性 SQL 供核验。",
                     null, plan.semanticSnapshotRefs(), plan.auditFingerprint(),
                     plan.appliedExclusions(), List.of(), spec, chartSpec,
-                    plan.mode().name(), plan.federationEngine(), whNames, sqlPasses);
+                    plan.mode().name(), plan.federationEngine(), whNames, sqlPasses,
+                        plan.reproducibilityFingerprint());
         }
 
         List<Map<String, Object>> mergedRows = mergeCohortRows(allRawRows, plan.mergeColumns());
@@ -412,7 +418,8 @@ public class NativeInsightEngine implements InsightQueryEngine {
                         + mergedRows.size() + " 条结果。",
                 null, plan.semanticSnapshotRefs(), plan.auditFingerprint(),
                 plan.appliedExclusions(), List.of(), spec, chartSpec,
-                plan.mode().name(), plan.federationEngine(), whNames, sqlPasses);
+                plan.mode().name(), plan.federationEngine(), whNames, sqlPasses,
+                        plan.reproducibilityFingerprint());
     }
 
     private EngineAskResult executeFederatedJoin(String queryId,
@@ -442,7 +449,8 @@ public class NativeInsightEngine implements InsightQueryEngine {
                         "已通过 StarRocks External Catalog 完成跨仓库任意联邦 JOIN，返回 " + rows.size() + " 条结果。",
                         null, plan.semanticSnapshotRefs(), plan.auditFingerprint(),
                         plan.appliedExclusions(), List.of(), spec, chartSpec,
-                        plan.mode().name(), "STARROCKS", whNames, sqlPasses);
+                        plan.mode().name(), "STARROCKS", whNames, sqlPasses,
+                        plan.reproducibilityFingerprint());
             } catch (Exception ex) {
                 log.warn("StarRocks 联邦查询失败: {}", ex.getMessage());
                 ChartSpec chartSpec = chartRecommender.recommend(
@@ -452,7 +460,8 @@ public class NativeInsightEngine implements InsightQueryEngine {
                         "已完成 StarRocks 跨 Catalog 联邦编译（执行暂不可达：" + ex.getMessage() + "）。",
                         null, plan.semanticSnapshotRefs(), plan.auditFingerprint(),
                         plan.appliedExclusions(), List.of(), spec, chartSpec,
-                        plan.mode().name(), "STARROCKS", whNames, sqlPasses);
+                        plan.mode().name(), "STARROCKS", whNames, sqlPasses,
+                        plan.reproducibilityFingerprint());
             }
         }
 
@@ -473,7 +482,8 @@ public class NativeInsightEngine implements InsightQueryEngine {
                     "已完成 DuckDB 联邦编译（未装配 FederatedQueryGateway）。",
                     null, plan.semanticSnapshotRefs(), plan.auditFingerprint(),
                     plan.appliedExclusions(), List.of(), spec, chartSpec,
-                    plan.mode().name(), "DUCKDB", whNames, sqlPasses);
+                    plan.mode().name(), "DUCKDB", whNames, sqlPasses,
+                        plan.reproducibilityFingerprint());
         }
 
         List<FederatedTableInput> inputs = new ArrayList<>();
@@ -515,7 +525,8 @@ public class NativeInsightEngine implements InsightQueryEngine {
                     queryId, "SUCCESS", fedPlan.federatedSql(), execCols, fedRes.rows(),
                     summary, null, plan.semanticSnapshotRefs(), plan.auditFingerprint(),
                     plan.appliedExclusions(), List.of(), spec, chartSpec,
-                    plan.mode().name(), "DUCKDB", whNames, sqlPasses);
+                    plan.mode().name(), "DUCKDB", whNames, sqlPasses,
+                        plan.reproducibilityFingerprint());
         } catch (Exception ex) {
             log.warn("DuckDB 联邦执行失败: {}", ex.getMessage());
             ChartSpec chartSpec = chartRecommender.recommend(
@@ -525,7 +536,8 @@ public class NativeInsightEngine implements InsightQueryEngine {
                     "已完成 DuckDB 跨仓联邦编译（源仓库暂不可达：" + ex.getMessage() + "），可核验各仓提取 SQL 与联邦 JOIN SQL。",
                     null, plan.semanticSnapshotRefs(), plan.auditFingerprint(),
                     plan.appliedExclusions(), List.of(), spec, chartSpec,
-                    plan.mode().name(), "DUCKDB", whNames, sqlPasses);
+                    plan.mode().name(), "DUCKDB", whNames, sqlPasses,
+                        plan.reproducibilityFingerprint());
         }
     }
 

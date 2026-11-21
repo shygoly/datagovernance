@@ -1,0 +1,7 @@
+{
+  "id": "g02_nullif_allowed",
+  "kind": "null_as_zero",
+  "expression": "SUM(a) / NULLIF(SUM(b), 0)",
+  "null_as_zero": false,
+  "expect_error": null
+}

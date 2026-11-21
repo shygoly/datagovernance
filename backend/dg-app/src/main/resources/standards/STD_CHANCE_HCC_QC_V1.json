@@ -1,0 +1,29 @@
+{
+  "standardRef": "STD_CHANCE_HCC_QC_V1",
+  "version": "1.0.0",
+  "name": "CHANCE 肝癌专病确定性质控规则包（占位可挂载）",
+  "rules": [
+    {
+      "ruleId": "CNLC_CONFLICT",
+      "severity": "Blocker",
+      "description": "CNLC 与肿瘤负荷/PVTT/肝外转移/Child-Pugh 自洽校验"
+    },
+    {
+      "ruleId": "TEMPORAL_FOLLOWUP_BEFORE_T0",
+      "severity": "Blocker",
+      "description": "随访日期不得早于实际治疗完成时间 T0"
+    },
+    {
+      "ruleId": "TEMPORAL_DEATH_BEFORE_DISCHARGE",
+      "severity": "Blocker",
+      "description": "死亡日期不得早于末次出院"
+    },
+    {
+      "ruleId": "UNIT_DIAMETER_MIXED",
+      "severity": "Warning",
+      "description": "肿瘤径线 cm/mm 混用拦截"
+    }
+  ],
+  "operatorId": "hcc_clinical_qc_v1",
+  "operatorVersion": "1.0.0"
+}

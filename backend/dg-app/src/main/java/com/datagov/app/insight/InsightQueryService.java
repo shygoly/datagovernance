@@ -106,7 +106,8 @@ public class InsightQueryService {
             String executionMode,
             String federationEngine,
             List<String> warehousesUsed,
-            List<WarehouseSqlPass> warehouseSqls
+            List<WarehouseSqlPass> warehouseSqls,
+            com.datagov.common.audit.ReproducibilityFingerprint reproducibilityFingerprint
     ) {
         public Answer(String queryId, String state, String sql,
                       List<InsightColumn> columns, List<Map<String, Object>> rows,
@@ -118,7 +119,22 @@ public class InsightQueryService {
             this(queryId, state, sql, columns, rows, rowCount, truncated, elapsedMs,
                     maskedColumns, grantIds, summary, semanticSnapshotRefs, auditFingerprint,
                     appliedExclusions, clarifications, executedSpec, chartSpec,
-                    null, null, List.of(), List.of());
+                    null, null, List.of(), List.of(), null);
+        }
+
+        public Answer(String queryId, String state, String sql,
+                      List<InsightColumn> columns, List<Map<String, Object>> rows,
+                      int rowCount, boolean truncated, long elapsedMs,
+                      List<String> maskedColumns, List<String> grantIds, String summary,
+                      List<String> semanticSnapshotRefs, String auditFingerprint,
+                      List<String> appliedExclusions, List<ClarificationOption> clarifications,
+                      SemanticQuerySpec executedSpec, ChartSpec chartSpec,
+                      String executionMode, String federationEngine,
+                      List<String> warehousesUsed, List<WarehouseSqlPass> warehouseSqls) {
+            this(queryId, state, sql, columns, rows, rowCount, truncated, elapsedMs,
+                    maskedColumns, grantIds, summary, semanticSnapshotRefs, auditFingerprint,
+                    appliedExclusions, clarifications, executedSpec, chartSpec,
+                    executionMode, federationEngine, warehousesUsed, warehouseSqls, null);
         }
     }
 
@@ -241,7 +257,8 @@ public class InsightQueryService {
                     result.appliedExclusions(), result.clarifications(),
                     result.executedSpec(), result.chartSpec(),
                     result.executionMode(), result.federationEngine(),
-                    result.warehousesUsed(), result.warehouseSqls());
+                    result.warehousesUsed(), result.warehouseSqls(),
+                    result.reproducibilityFingerprint());
         } catch (RuntimeException ex) {
             long elapsed = System.currentTimeMillis() - started;
             fact.setSucceeded(false);

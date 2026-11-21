@@ -47,4 +47,8 @@ export const config = {
   defaultMaxToolCallsPerTurn: Number(process.env.AGENT_MAX_TOOL_CALLS ?? 12),
   defaultMaxConsecutiveErrors: Number(process.env.AGENT_MAX_CONSECUTIVE_ERRORS ?? 2),
   otelCaptureContent: process.env.DG_OTEL_CAPTURE_CONTENT === 'true',
+  /** C5 按密级模型路由标识：SELF_HOSTED（私有/内网托管）或 EXTERNAL（公网外部 API）。 */
+  modelEndpointKind: (process.env.AGENT_MODEL_ENDPOINT_KIND?.toUpperCase() === 'SELF_HOSTED'
+    ? 'SELF_HOSTED'
+    : 'EXTERNAL') as 'SELF_HOSTED' | 'EXTERNAL',
 }

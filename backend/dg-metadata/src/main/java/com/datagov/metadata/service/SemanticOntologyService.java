@@ -69,7 +69,16 @@ import java.util.stream.Collectors;
 public class SemanticOntologyService {
 
     public static final Set<String> OBJECT_TYPES = Set.of(
-            "ENTITY", "ATTRIBUTE", "DIMENSION", "FACT", "METRIC", "CONCEPT", "PROCESS");
+            "ENTITY", "ATTRIBUTE", "DIMENSION", "FACT", "METRIC", "CONCEPT", "PROCESS",
+            // Layer 3：数据驱动自治的静态声明契约（data-driven-ops-profile）
+            "TARGET", "ACTION_TYPE");
+    public static final Set<String> AUTH_LEVELS = Set.of(
+            "L0_ADVISORY", "L1_AUTO", "L2_APPROVAL", "L3_DUAL_APPROVAL");
+    public static final Set<String> DOMAIN_SCOPES = Set.of("PLATFORM_INTERNAL", "EXTERNAL_EXEMPTED");
+    public static final Set<String> DRY_RUN_MODES = Set.of("NONE", "SIMULATE_IMPACT", "READ_ONLY_PROBE");
+    public static final Set<String> INVARIANT_SEVERITIES = Set.of("HARD_BLOCK", "WARN");
+    public static final Set<String> OBJECTIVE_DIRECTIONS = Set.of("MAXIMIZE", "MINIMIZE");
+    private static final Set<String> COMPARISON_OPERATORS = Set.of("LT", "LTE", "GT", "GTE", "EQ", "NE");
     public static final Set<String> MAPPING_ROLES = Set.of(
             "ID", "DESC", "CODE", "MEASURE", "TIME_KEY", "FILTER_KEY");
     public static final Set<String> EDGE_CATEGORIES = Set.of("STRUCTURAL", "SEMANTIC", "CAUSAL");
@@ -168,7 +177,10 @@ public class SemanticOntologyService {
             Instant updatedAt,
             long mappingCount,
             long linkCount,
-            String scope
+            String scope,
+            Map<String, Object> provenance,
+            Map<String, Object> verified,
+            Boolean requiresHumanReview
     ) {
         public ObjectView(String id, String code, String name, String objectType,
                           String domainId, String domainName, String standardRef, String glossaryTermId,
@@ -181,7 +193,23 @@ public class SemanticOntologyService {
             this(id, code, name, objectType, domainId, domainName, standardRef, glossaryTermId,
                     spec, aiContext, maxSensitivity, status, versionNo, validFrom, validTo,
                     ownerUsername, contentDigest, sourceKind, rejectionReason, publishedBy,
-                    publishedAt, createdAt, updatedAt, mappingCount, linkCount, "WORKSPACE");
+                    publishedAt, createdAt, updatedAt, mappingCount, linkCount, "WORKSPACE",
+                    Map.of(), Map.of(), false);
+        }
+
+        public ObjectView(String id, String code, String name, String objectType,
+                          String domainId, String domainName, String standardRef, String glossaryTermId,
+                          Map<String, Object> spec, Map<String, Object> aiContext,
+                          String maxSensitivity, String status, int versionNo,
+                          Instant validFrom, Instant validTo, String ownerUsername,
+                          String contentDigest, String sourceKind, String rejectionReason,
+                          String publishedBy, Instant publishedAt, Instant createdAt, Instant updatedAt,
+                          long mappingCount, long linkCount, String scope) {
+            this(id, code, name, objectType, domainId, domainName, standardRef, glossaryTermId,
+                    spec, aiContext, maxSensitivity, status, versionNo, validFrom, validTo,
+                    ownerUsername, contentDigest, sourceKind, rejectionReason, publishedBy,
+                    publishedAt, createdAt, updatedAt, mappingCount, linkCount, scope,
+                    Map.of(), Map.of(), false);
         }
     }
 
@@ -620,6 +648,12 @@ public class SemanticOntologyService {
                 && (obj.getStandardRef() == null || obj.getStandardRef().isBlank())) {
             throw new BizException(ErrorCode.MTD_SEMANTIC_INVALID,
                     "指标（METRIC）发布失败（CONSTITUTION C2）：必须绑定权威 Standard 口径引用（standardRef）");
+        }
+        if ("TARGET".equals(obj.getObjectType())) {
+            validateTargetPublish(ws, obj);
+        }
+        if ("ACTION_TYPE".equals(obj.getObjectType())) {
+            validateActionTypePublish(ws, obj);
         }
         assertNoPlaintextPii(obj.getAiContextJson(), "aiContext");
 
@@ -1495,6 +1529,235 @@ public class SemanticOntologyService {
         if (!OBJECT_TYPES.contains(type)) {
             throw new BizException(ErrorCode.MTD_SEMANTIC_INVALID, "不支持的语义对象类型: " + type);
         }
+        Map<String, Object> spec = req.spec() == null ? Map.of() : req.spec();
+        switch (type) {
+            case "TARGET" -> validateTargetSpec(spec);
+            case "ACTION_TYPE" -> validateActionTypeSpec(spec);
+            default -> {
+                // Layer 1/2 的 spec 由既有 metric-6d / 映射校验负责
+            }
+        }
+    }
+
+    /**
+     * Target 静态声明：硬不变量（一票否决）+ 软目标（方向/阈值/权重）。
+     * 这里只做结构校验；引用是否 PUBLISHED 在发布时检查（C2 存在性闸门）。
+     */
+    private void validateTargetSpec(Map<String, Object> spec) {
+        String entityRef = str(spec.get("targetEntityRef"));
+        if (entityRef.isBlank()) {
+            throw new BizException(ErrorCode.MTD_SEMANTIC_INVALID, "TARGET 必须声明 targetEntityRef");
+        }
+        List<Map<String, Object>> invariants = mapList(spec.get("invariants"));
+        List<Map<String, Object>> objectives = mapList(spec.get("objectives"));
+        if (invariants.isEmpty() && objectives.isEmpty()) {
+            throw new BizException(ErrorCode.MTD_SEMANTIC_INVALID,
+                    "TARGET 至少需要一个 invariant 或 objective，否则无法参与 Arbiter 裁决");
+        }
+        for (Map<String, Object> inv : invariants) {
+            String code = str(inv.get("code"));
+            if (code.isBlank()) {
+                throw new BizException(ErrorCode.MTD_SEMANTIC_INVALID, "TARGET invariant 缺少 code");
+            }
+            String severity = str(inv.get("severity")).isBlank()
+                    ? "HARD_BLOCK" : str(inv.get("severity")).toUpperCase(Locale.ROOT);
+            if (!INVARIANT_SEVERITIES.contains(severity)) {
+                throw new BizException(ErrorCode.MTD_SEMANTIC_INVALID,
+                        "invariant " + code + " 的 severity 必须是 HARD_BLOCK / WARN");
+            }
+            String metricRef = str(inv.get("metricRef"));
+            String ruleRef = str(inv.get("ruleRef"));
+            if (metricRef.isBlank() && ruleRef.isBlank()) {
+                throw new BizException(ErrorCode.MTD_SEMANTIC_INVALID,
+                        "invariant " + code + " 必须引用 metricRef 或 ruleRef");
+            }
+            if (!metricRef.isBlank()) {
+                String op = str(inv.get("operator")).toUpperCase(Locale.ROOT);
+                if (!COMPARISON_OPERATORS.contains(op)) {
+                    throw new BizException(ErrorCode.MTD_SEMANTIC_INVALID,
+                            "invariant " + code + " 的 operator 必须是 " + COMPARISON_OPERATORS);
+                }
+                if (number(inv.get("threshold")) == null) {
+                    throw new BizException(ErrorCode.MTD_SEMANTIC_INVALID,
+                            "invariant " + code + " 缺少数值 threshold");
+                }
+            }
+        }
+        for (Map<String, Object> obj : objectives) {
+            String metricRef = str(obj.get("metricRef"));
+            if (metricRef.isBlank()) {
+                throw new BizException(ErrorCode.MTD_SEMANTIC_INVALID, "TARGET objective 缺少 metricRef");
+            }
+            String direction = str(obj.get("direction")).toUpperCase(Locale.ROOT);
+            if (!OBJECTIVE_DIRECTIONS.contains(direction)) {
+                throw new BizException(ErrorCode.MTD_SEMANTIC_INVALID,
+                        "objective " + metricRef + " 的 direction 必须是 MAXIMIZE / MINIMIZE");
+            }
+            if (number(obj.get("threshold")) == null) {
+                throw new BizException(ErrorCode.MTD_SEMANTIC_INVALID,
+                        "objective " + metricRef + " 缺少数值 threshold");
+            }
+            Double weight = number(obj.get("weight"));
+            if (weight != null && (weight < 0 || weight > 1)) {
+                throw new BizException(ErrorCode.MTD_SEMANTIC_INVALID,
+                        "objective " + metricRef + " 的 weight 必须在 0–1 之间");
+            }
+        }
+    }
+
+    /**
+     * ActionType 静态声明：授权等级、参数包络、Dry-Run 与配对补偿契约。
+     * L2/L3（以及有副作用的 L1）缺少参数包络或补偿动作时，发布即失败（C2/C7）。
+     */
+    private void validateActionTypeSpec(Map<String, Object> spec) {
+        String actionCode = str(spec.get("actionCode"));
+        String activityRef = str(spec.get("activityRef"));
+        if (actionCode.isBlank() || activityRef.isBlank()) {
+            throw new BizException(ErrorCode.MTD_SEMANTIC_INVALID,
+                    "ACTION_TYPE 必须声明 actionCode 与 activityRef");
+        }
+        String authLevel = str(spec.get("authLevel")).toUpperCase(Locale.ROOT);
+        if (!AUTH_LEVELS.contains(authLevel)) {
+            throw new BizException(ErrorCode.MTD_SEMANTIC_INVALID,
+                    "ACTION_TYPE authLevel 必须是 " + AUTH_LEVELS);
+        }
+        String domainScope = str(spec.get("domainScope")).toUpperCase(Locale.ROOT);
+        if (!DOMAIN_SCOPES.contains(domainScope)) {
+            throw new BizException(ErrorCode.MTD_SEMANTIC_INVALID,
+                    "ACTION_TYPE domainScope 必须是 " + DOMAIN_SCOPES);
+        }
+        String dryRunMode = str(spec.get("dryRunMode")).toUpperCase(Locale.ROOT);
+        if (!dryRunMode.isBlank() && !DRY_RUN_MODES.contains(dryRunMode)) {
+            throw new BizException(ErrorCode.MTD_SEMANTIC_INVALID,
+                    "ACTION_TYPE dryRunMode 必须是 " + DRY_RUN_MODES);
+        }
+        Double cooldown = number(spec.get("defaultCooldownSec"));
+        if (cooldown != null && cooldown < 0) {
+            throw new BizException(ErrorCode.MTD_SEMANTIC_INVALID, "defaultCooldownSec 不能为负数");
+        }
+        boolean needsEnvelope = !"L0_ADVISORY".equals(authLevel);
+        Map<String, Object> envelope = mapValue(spec.get("paramEnvelope"));
+        if (needsEnvelope) {
+            List<Object> required = listValue(envelope.get("required"));
+            if (required.isEmpty()) {
+                throw new BizException(ErrorCode.MTD_SEMANTIC_INVALID,
+                        "ACTION_TYPE " + actionCode + " 在 " + authLevel + " 下必须声明 paramEnvelope.required");
+            }
+            String compensating = str(spec.get("compensatingActionCode"));
+            if (compensating.isBlank()) {
+                throw new BizException(ErrorCode.MTD_SEMANTIC_INVALID,
+                        "ACTION_TYPE " + actionCode + " 在 " + authLevel + " 下必须声明 compensatingActionCode");
+            }
+        }
+    }
+
+    private void validateTargetPublish(String ws, SemanticObject target) {
+        Map<String, Object> spec = readJsonMap(target.getSpecJson());
+        validateTargetSpec(spec);
+        String entityRef = str(spec.get("targetEntityRef"));
+        requirePublishedRef(ws, entityRef, Set.of("ENTITY", "PROCESS"),
+                "TARGET 绑定的 targetEntityRef 未发布或不存在: " + entityRef);
+        for (Map<String, Object> obj : mapList(spec.get("objectives"))) {
+            String metricRef = str(obj.get("metricRef"));
+            requirePublishedRef(ws, metricRef, Set.of("METRIC"),
+                    "TARGET objective 引用的指标未发布或不存在: " + metricRef);
+        }
+        for (Map<String, Object> inv : mapList(spec.get("invariants"))) {
+            String metricRef = str(inv.get("metricRef"));
+            if (!metricRef.isBlank()) {
+                requirePublishedRef(ws, metricRef, Set.of("METRIC"),
+                        "TARGET invariant 引用的指标未发布或不存在: " + metricRef);
+            }
+        }
+    }
+
+    private void validateActionTypePublish(String ws, SemanticObject action) {
+        Map<String, Object> spec = readJsonMap(action.getSpecJson());
+        validateActionTypeSpec(spec);
+        String compensating = str(spec.get("compensatingActionCode"));
+        String actionCode = str(spec.get("actionCode"));
+        if (!compensating.isBlank()
+                && !compensating.equalsIgnoreCase(action.getCode())
+                && !compensating.equalsIgnoreCase(actionCode)) {
+            // 只校验“存在且未被驳回”，不要求对方已 PUBLISHED：
+            // 暂停/恢复这类配对动作互为补偿，强制先发布任一方会造成不可解的引导死锁。
+            // 真正的 PUBLISHED 存在性由 FlowCompiler 在流程编译期强制（C2）。
+            Long count = objectMapperDao.selectCount(new LambdaQueryWrapper<SemanticObject>()
+                    .and(w -> w.eq(SemanticObject::getWorkspaceId, ws)
+                            .ne(SemanticObject::getStatus, "REJECTED")
+                            .or(g -> g.eq(SemanticObject::getScope, "GLOBAL")
+                                    .eq(SemanticObject::getStatus, "PUBLISHED")))
+                    .eq(SemanticObject::getObjectType, "ACTION_TYPE")
+                    .and(w -> w.eq(SemanticObject::getId, compensating)
+                            .or().eq(SemanticObject::getCode, compensating)));
+            if (count == null || count == 0) {
+                throw new BizException(ErrorCode.MTD_SEMANTIC_INVALID,
+                        "ACTION_TYPE 的 compensatingActionCode 不存在: " + compensating);
+            }
+        }
+    }
+
+    private void requirePublishedRef(String ws, String ref, Set<String> types, String message) {
+        if (ref == null || ref.isBlank()) {
+            throw new BizException(ErrorCode.MTD_SEMANTIC_INVALID, message);
+        }
+        Long count = objectMapperDao.selectCount(new LambdaQueryWrapper<SemanticObject>()
+                .and(w -> w.eq(SemanticObject::getWorkspaceId, ws)
+                        .or(g -> g.eq(SemanticObject::getScope, "GLOBAL")
+                                .eq(SemanticObject::getStatus, "PUBLISHED")))
+                .in(SemanticObject::getObjectType, types)
+                .eq(SemanticObject::getStatus, "PUBLISHED")
+                .and(w -> w.eq(SemanticObject::getId, ref)
+                        .or().eq(SemanticObject::getCode, ref)));
+        if (count == null || count == 0) {
+            throw new BizException(ErrorCode.MTD_SEMANTIC_INVALID, message);
+        }
+    }
+
+    private static List<Map<String, Object>> mapList(Object raw) {
+        if (!(raw instanceof List<?> list)) {
+            return List.of();
+        }
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (Object item : list) {
+            if (item instanceof Map<?, ?> map) {
+                Map<String, Object> typed = new LinkedHashMap<>();
+                map.forEach((k, v) -> typed.put(String.valueOf(k), v));
+                out.add(typed);
+            }
+        }
+        return out;
+    }
+
+    private static Map<String, Object> mapValue(Object raw) {
+        if (!(raw instanceof Map<?, ?> map)) {
+            return Map.of();
+        }
+        Map<String, Object> typed = new LinkedHashMap<>();
+        map.forEach((k, v) -> typed.put(String.valueOf(k), v));
+        return typed;
+    }
+
+    private static List<Object> listValue(Object raw) {
+        return raw instanceof List<?> list ? new ArrayList<>(list) : List.of();
+    }
+
+    private static Double number(Object raw) {
+        if (raw instanceof Number n) {
+            return n.doubleValue();
+        }
+        if (raw instanceof String s && !s.isBlank()) {
+            try {
+                return Double.parseDouble(s.trim());
+            } catch (NumberFormatException ignored) {
+                return null;
+            }
+        }
+        return null;
+    }
+
+    private static String str(Object raw) {
+        return raw == null ? "" : String.valueOf(raw).trim();
     }
 
     private void validateLinkCategoryAndType(String category, String linkType) {
@@ -1604,7 +1867,10 @@ public class SemanticOntologyService {
                     o.getPublishedBy(), o.getPublishedAt(), o.getCreatedAt(), o.getUpdatedAt(),
                     mappingCounts.getOrDefault(o.getId(), 0L),
                     linkCounts.getOrDefault(o.getId(), 0L),
-                    o.getScope() == null ? "WORKSPACE" : o.getScope()));
+                    o.getScope() == null ? "WORKSPACE" : o.getScope(),
+                    readJsonMap(o.getProvenanceJson()),
+                    readJsonMap(o.getVerifiedJson()),
+                    Boolean.TRUE.equals(o.getRequiresHumanReview())));
         }
         return out;
     }

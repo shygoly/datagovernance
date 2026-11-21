@@ -67,6 +67,7 @@ export interface InsightAnswer {
   summary?: string
   semanticSnapshotRefs?: string[]
   auditFingerprint?: string | null
+  reproducibilityFingerprint?: import('./semantic').ReproducibilityFingerprint | null
   appliedExclusions?: string[]
   clarifications?: InsightClarificationOption[]
   executedSpec?: SemanticQuerySpec | null

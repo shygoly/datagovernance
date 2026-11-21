@@ -23,6 +23,15 @@ space:
     # 外部分析 Agent 的结论归口 —— 见 docs/analysis-report.md
     - AnalysisReport        # 聚合根:subject/title/state/createdBy/correlationId
     - AnalysisReportVersion # 不可变内容:summary/bodyMd/conclusion/evidence/model/digest
+    # 运营报表与可复现指纹（定义/运行审计；调度触发仍归 control）—— 见 ARCHITECTURE.md §1/§5.4
+    - OperationalReportDef      # 参数 schema + 复合块编排（非 AnalysisReport）
+    - OperationalReportVersion  # 不可变定义快照
+    - OperationalReportRun      # 运行记录 + reproducibility_fingerprint + 制品指针
+    - ReproducibilityFingerprint # C8 指纹结构契约（Insight/Stats/报表共用 schema）
+    # 数据自治观测与回检(data-driven-ops-profile)
+    - DecisionTrace             # 触发快照→裁决→Dry-Run→审批→执行/补偿→T+1 回检
+    - ShadowEvaluator           # 按 Target.objectives 确定性比较 before/after
+    - AutonomyKillSwitchBridge  # 急停联动:所有 Flow 降回 SHADOW 并取消在途实例
     # 以下为清单未覆盖但预留,见风险 R10
     - QualityRule           # NOT IN SCOPE
     - QualityResult         # NOT IN SCOPE
@@ -40,6 +49,10 @@ space:
     AlertChannel: [ACTIVE, UNREACHABLE, DISABLED]
     AnalysisReport: [PUBLISHED, RETRACTED]
     AnalysisReportVersion: [CURRENT, SUPERSEDED]   # 不可变;修订产生新版本
+    OperationalReportDef: [DRAFT, PUBLISHED, ARCHIVED]
+    OperationalReportVersion: [CURRENT, SUPERSEDED]
+    OperationalReportRun: [PENDING, RUNNING, SUCCEEDED, FAILED, CANCELED]
+    DecisionTrace: [PENDING, IMPROVED, NO_EFFECT, DEGRADED, INCONCLUSIVE]
 
   commands:
     - CreateAlertRule
@@ -53,6 +66,9 @@ space:
     - PublishAnalysisReport          # 外部 Agent 发布结论(首版)
     - PublishAnalysisReportVersion   # 修订;旧版转 SUPERSEDED
     - RetractAnalysisReport
+    - RecordAutonomyDecisionTrace
+    - EvaluateShadowOutcome
+    - TriggerAutonomyKillSwitch
 
   queries:
     - GetMonitorDashboard     # 序号24 跨数据集成+数据开发聚合
@@ -64,12 +80,18 @@ space:
     - GetLineageProvenance
     - GetAnalysisReport
     - ListAnalysisReports
+    - GetDecisionTrace
+    - ListDecisionTraces
+    - GetShadowEvaluation
 
   events_produced:
     - AlertTriggered
     - AlertNotified
     - AlertNotifyFailed
     - AlertSuppressed
+    - AutonomyDecisionRecorded
+    - AutonomyVerifyEvaluated
+    - AutonomyKillSwitchTriggered
     - AlertResolved
     - AuditRecorded
     - AccessDenied
@@ -105,6 +127,8 @@ space:
     - 治理约束是编译的输入(control 在编译期调用 EvaluateAccess),不是事后检查
     - 分析报告不可变,修订产生新版本;evidence 非空,INCONCLUSIVE 是结论的一等取值
     - 分析报告只接受携带用户上下文的写入,无服务账号(与 GOVERNANCE-MODEL §G 一致)
+    - OperationalReport 是参数化运营报表(复合块/快照/导出/分发),不得与 AnalysisReport(解释结论)混用同一对象模型
+    - OperationalReportRun / Insight / ClinicalOperator 输出须绑定同一 reproducibility_fingerprint schema（C8）
 
   storage:
     aggregates: PostgreSQL(由事件驱动的物化视图 —— 不得跨库 join 其他 Space)

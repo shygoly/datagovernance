@@ -7,8 +7,13 @@ import com.datagov.app.insight.InsightQueryService.QueryLogView;
 import com.datagov.app.web.RequirePermission;
 import com.datagov.common.api.ApiResponse;
 import com.datagov.common.api.PageResult;
+import com.datagov.common.error.BizException;
 import com.datagov.metadata.service.SemanticQueryCompiler.CompiledSemanticQuery;
 import com.datagov.metadata.service.SemanticQueryCompiler.SemanticQuerySpec;
+import com.datagov.metadata.service.gate.CompileAndValidateResult;
+import com.datagov.metadata.service.gate.CompileReject;
+import com.datagov.metadata.service.gate.CompileRejectException;
+import com.datagov.metadata.service.gate.SemanticCompileErrorCode;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.http.HttpHeaders;
@@ -62,6 +67,25 @@ public class InsightController {
             description = "输入结构化 SemanticQuerySpec，返回确定性只读 SQL、防扇出标记与 SHA-256 审计指纹")
     public ApiResponse<CompiledSemanticQuery> compileSemantic(@RequestBody SemanticQuerySpec spec) {
         return ApiResponse.ok(nativeEngine.compilePreview(spec));
+    }
+
+    @PostMapping("/semantic/compile-and-validate")
+    @RequirePermission("insight:ask")
+    @Operation(summary = "SMQ 干跑校验",
+            description = "成功 ok=true + compiled；失败 ok=false + 类型化 CompileReject（error_code/allowed/repair_hint）")
+    public ApiResponse<CompileAndValidateResult> compileAndValidate(@RequestBody SemanticQuerySpec spec) {
+        try {
+            return ApiResponse.ok(CompileAndValidateResult.success(nativeEngine.compilePreview(spec)));
+        } catch (CompileRejectException ex) {
+            return ApiResponse.ok(CompileAndValidateResult.failure(ex.reject()));
+        } catch (BizException ex) {
+            return ApiResponse.ok(CompileAndValidateResult.failure(CompileReject.of(
+                    SemanticCompileErrorCode.EMPTY_QUERY,
+                    ex.getMessage(),
+                    "$",
+                    java.util.List.of(),
+                    "根据 message 修正 SMQ 后重试 compile-and-validate")));
+        }
     }
 
     @PostMapping("/export")

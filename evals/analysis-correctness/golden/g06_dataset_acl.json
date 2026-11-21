@@ -1,0 +1,7 @@
+{
+  "id": "g06_dataset_acl",
+  "kind": "gate",
+  "allowed_datasets": ["ds_ok"],
+  "required_datasets": ["ds_secret"],
+  "expect_error": "DATASET_ACL_DENIED"
+}

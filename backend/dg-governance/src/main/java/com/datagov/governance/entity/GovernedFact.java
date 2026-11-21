@@ -36,6 +36,10 @@ public class GovernedFact {
     private String reviewedBy;
     private Instant reviewedAt;
     private String reviewNote;
+    /** 确定性异常模式指纹（V44，用于驳回防重提 C9）。 */
+    private String patternFingerprint;
+    /** 审校驳回理由（V44，写入防重提账本）。 */
+    private String rejectionReason;
     private Instant createdAt;
     private Instant updatedAt;
 }

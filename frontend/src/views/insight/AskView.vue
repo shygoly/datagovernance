@@ -6,7 +6,7 @@ import { agentApi, streamAgentEvents } from '@/api/agent'
 import { insightApi } from '@/api/insight'
 import { useAuthStore } from '@/stores/auth'
 import { useAgentSessionStore } from '@/stores/agentSession'
-import type { AgentActionProposal, AgentConversation, AgentConversationSummary, AgentStreamEvent, AgentTurn } from '@/types/agent'
+import type { AgentActionProposal, AgentConversation, AgentConversationSummary, AgentStreamEvent, AgentTurn, AgentUiBlock } from '@/types/agent'
 import type { InsightAnswer, InsightChartSpec, InsightDashboard, InsightDataset } from '@/types/insight'
 import { formatDateTime } from '@/utils/format'
 import InsightAnswerChart, {
@@ -15,6 +15,7 @@ import InsightAnswerChart, {
   type ChartFilterSelection,
 } from '@/components/insight/InsightAnswerChart.vue'
 import AgentConsentDialog from '@/components/agent/AgentConsentDialog.vue'
+import AgentUiBlockRenderer from '@/components/agent/AgentUiBlockRenderer.vue'
 
 defineOptions({ name: 'AskView' })
 
@@ -56,6 +57,11 @@ const examples = [
 const TOOL_LABELS: Record<string, string> = {
   activate_skill: '激活技能规程',
   list_datasets: '列出语义主题',
+  list_metrics: '列出规范度量',
+  list_dimensions: '列出规范维度',
+  resolve_ref: '解析语义短名',
+  compile_and_validate: '干跑校验 SMQ',
+  get_catalog_grammar: '获取 Catalog Grammar',
   ask_data: '语义问数',
   search_semantic_subgraph: '检索语义知识子图',
   get_semantic_object: '查看语义对象',
@@ -388,6 +394,24 @@ function applyEvent(event: AgentStreamEvent) {
       if (event.answer) {
         turn.answer = event.answer as InsightAnswer
       }
+      const reject = event.compileReject as
+        | { errorCode?: string; error_code?: string; message?: string; repairHint?: string; repair_hint?: string; location?: string; allowed?: string[] }
+        | undefined
+      if (reject && (reject.errorCode || reject.error_code || reject.message)) {
+        turn.compileReject = {
+          errorCode: String(reject.errorCode || reject.error_code || 'COMPILE_REJECT'),
+          message: String(reject.message || ''),
+          repairHint: reject.repairHint || reject.repair_hint
+            ? String(reject.repairHint || reject.repair_hint)
+            : undefined,
+          location: reject.location ? String(reject.location) : undefined,
+          allowed: Array.isArray(reject.allowed) ? reject.allowed.map(String) : undefined,
+        }
+        if (!turn.error) {
+          turn.error = `${turn.compileReject.errorCode}: ${turn.compileReject.message}`
+            + (turn.compileReject.repairHint ? ` | 修复建议: ${turn.compileReject.repairHint}` : '')
+        }
+      }
       break
     }
     case 'done': {
@@ -398,6 +422,9 @@ function applyEvent(event: AgentStreamEvent) {
       }
       if (event.answer) {
         turn.answer = event.answer as InsightAnswer
+      }
+      if (Array.isArray(event.uiBlocks)) {
+        turn.uiBlocks = event.uiBlocks as AgentUiBlock[]
       }
       if (event.error) {
         turn.error = String(event.error)
@@ -422,6 +449,17 @@ function applyEvent(event: AgentStreamEvent) {
       const proposal = event.proposal as AgentActionProposal | undefined
       if (proposal?.id) {
         agentSession.pushProposal(proposal)
+      }
+      break
+    }
+    case 'ui_block': {
+      const block = event.block as AgentUiBlock | undefined
+      if (block?.component && block.props && typeof block.props === 'object') {
+        const turn = ensureTurn(turnId, '')
+        if (!turn.uiBlocks) {
+          turn.uiBlocks = []
+        }
+        turn.uiBlocks.push(block)
       }
       break
     }
@@ -890,19 +928,34 @@ onBeforeUnmount(() => {
             </div>
 
             <div v-if="turn.text" class="agent-text">{{ displayText(turn.text) }}</div>
+            <AgentUiBlockRenderer v-if="turn.uiBlocks?.length" :blocks="turn.uiBlocks" />
             <el-skeleton
               v-if="turn.status === 'running' && !turn.text"
               :rows="3"
               animated
             />
             <el-alert
-              v-if="turn.error"
+              v-if="turn.compileReject || turn.error"
               type="error"
               show-icon
               :closable="false"
-              :title="turn.error"
+              :title="turn.compileReject
+                ? `${turn.compileReject.errorCode}: ${turn.compileReject.message}`
+                : turn.error"
               class="agent-alert"
-            />
+            >
+              <template v-if="turn.compileReject">
+                <p v-if="turn.compileReject.location" class="reject-meta">
+                  位置: {{ turn.compileReject.location }}
+                </p>
+                <p v-if="turn.compileReject.repairHint" class="reject-meta">
+                  修复建议: {{ turn.compileReject.repairHint }}
+                </p>
+                <p v-if="turn.compileReject.allowed?.length" class="reject-meta">
+                  允许值: {{ turn.compileReject.allowed.join(', ') }}
+                </p>
+              </template>
+            </el-alert>
 
             <el-alert
               v-if="turn.answer?.maskedColumns?.length"
@@ -1291,6 +1344,12 @@ onBeforeUnmount(() => {
   white-space: pre-wrap;
 }
 
+.reject-meta {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--dg-text-muted);
+  line-height: 1.4;
+}
 .agent-alert {
   margin: var(--dg-space-sm) 0;
 }

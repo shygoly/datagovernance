@@ -91,6 +91,36 @@ class SemanticOntologyServiceTest {
         WorkspaceContext.clear();
     }
 
+
+    @Test
+    @DisplayName("Layer 3：TARGET 至少需要一个 invariant 或 objective")
+    void targetRequiresInvariantOrObjective() {
+        ObjectRequest request = new ObjectRequest("target.core", "核心目标", "TARGET",
+                null, null, null, Map.of("targetEntityRef", "sem_entity"), Map.of(),
+                "alice", "HUMAN");
+
+        assertThatThrownBy(() -> service.createObject(request))
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("invariant");
+    }
+
+    @Test
+    @DisplayName("Layer 3：L2 ACTION_TYPE 缺少参数包络时拒绝创建")
+    void actionTypeRequiresEnvelope() {
+        ObjectRequest request = new ObjectRequest("action.pause", "暂停同步", "ACTION_TYPE",
+                null, null, null, Map.of(
+                        "actionCode", "PAUSE_SYNC_JOB",
+                        "authLevel", "L2_APPROVAL",
+                        "domainScope", "PLATFORM_INTERNAL",
+                        "activityRef", "control.job.pause",
+                        "compensatingActionCode", "RESUME_SYNC_JOB"), Map.of(),
+                "alice", "HUMAN");
+
+        assertThatThrownBy(() -> service.createObject(request))
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("paramEnvelope");
+    }
+
     @Test
     @DisplayName("C2 闸门：指标缺少 Standard 口径绑定时拒绝发布")
     void metricWithoutStandardRefCannotPublish() {

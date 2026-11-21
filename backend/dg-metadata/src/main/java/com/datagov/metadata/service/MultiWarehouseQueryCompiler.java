@@ -1,6 +1,7 @@
 package com.datagov.metadata.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.datagov.common.audit.ReproducibilityFingerprint;
 import com.datagov.common.error.BizException;
 import com.datagov.common.error.ErrorCode;
 import com.datagov.data.spi.query.ReadOnlySqlGuard;
@@ -18,8 +19,12 @@ import com.datagov.metadata.service.SemanticQueryCompiler.CompiledSemanticQuery;
 import com.datagov.metadata.service.SemanticQueryCompiler.FilterClause;
 import com.datagov.metadata.service.SemanticQueryCompiler.OrderClause;
 import com.datagov.metadata.service.SemanticQueryCompiler.SemanticQuerySpec;
+import com.datagov.metadata.service.gate.SemanticExecutionMode;
+import com.datagov.metadata.service.gate.SemanticGateRequest;
+import com.datagov.metadata.service.gate.SemanticGateService;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -64,6 +69,7 @@ public class MultiWarehouseQueryCompiler {
     private final CatalogDatasetMapper datasetMapper;
     private final CatalogColumnMapper columnMapper;
     private final ObjectMapper json;
+    private final SemanticGateService semanticGate;
 
     public MultiWarehouseQueryCompiler(SemanticOntologyService ontologyService,
                                        SemanticWarehouseService warehouseService,
@@ -71,12 +77,26 @@ public class MultiWarehouseQueryCompiler {
                                        CatalogDatasetMapper datasetMapper,
                                        CatalogColumnMapper columnMapper,
                                        ObjectMapper json) {
+        this(ontologyService, warehouseService, singleCompiler, datasetMapper, columnMapper, json,
+                new SemanticGateService(json));
+    }
+
+    /** Spring 注入入口：多构造器时必须显式 @Autowired，否则会回退无参构造并启动失败。 */
+    @Autowired
+    public MultiWarehouseQueryCompiler(SemanticOntologyService ontologyService,
+                                       SemanticWarehouseService warehouseService,
+                                       SemanticQueryCompiler singleCompiler,
+                                       CatalogDatasetMapper datasetMapper,
+                                       CatalogColumnMapper columnMapper,
+                                       ObjectMapper json,
+                                       SemanticGateService semanticGate) {
         this.ontologyService = ontologyService;
         this.warehouseService = warehouseService;
         this.singleCompiler = singleCompiler;
         this.datasetMapper = datasetMapper;
         this.columnMapper = columnMapper;
         this.json = json;
+        this.semanticGate = semanticGate == null ? new SemanticGateService(json) : semanticGate;
     }
 
     // ── Execution Plan Records ───────────────────────────────────────────
@@ -147,8 +167,22 @@ public class MultiWarehouseQueryCompiler {
             List<String> semanticSnapshotRefs,
             String auditFingerprint,
             List<String> appliedExclusions,
-            List<String> warnings
+            List<String> warnings,
+            ReproducibilityFingerprint reproducibilityFingerprint
     ) {
+        public MultiWarehousePlan(ExecutionMode mode,
+                                  String federationEngine,
+                                  List<WarehouseSubQuery> subQueries,
+                                  List<AggregateMergeColumn> mergeColumns,
+                                  FederatedJoinPlan federatedJoinPlan,
+                                  List<CompiledColumn> columns,
+                                  List<String> semanticSnapshotRefs,
+                                  String auditFingerprint,
+                                  List<String> appliedExclusions,
+                                  List<String> warnings) {
+            this(mode, federationEngine, subQueries, mergeColumns, federatedJoinPlan, columns,
+                    semanticSnapshotRefs, auditFingerprint, appliedExclusions, warnings, null);
+        }
     }
 
     // ── Main Entry ───────────────────────────────────────────────────────
@@ -178,15 +212,10 @@ public class MultiWarehouseQueryCompiler {
         Map<String, List<SemanticMapping>> mappingsByObj = allMappings.stream()
                 .collect(Collectors.groupingBy(SemanticMapping::getObjectId));
 
-        // 1. 解析并校验指标（C2 Standard 闸门）与维度（支持内置队列维度 attr.system.cohort）
+        // 1. 解析已发布指标与维度（支持内置队列维度 attr.system.cohort）；C2/允许维/时间窗走统一 SemanticGate
         List<SemanticObject> metricObjs = new ArrayList<>();
         for (String code : safeList(spec.metrics())) {
-            SemanticObject m = requirePublished(byCode, code, "METRIC");
-            if (m.getStandardRef() == null || m.getStandardRef().isBlank()) {
-                throw new BizException(ErrorCode.MTD_SEMANTIC_COMPILE_FAILED,
-                        "指标 " + m.getCode() + " 缺少 Standard 口径绑定（CONSTITUTION C2），拒绝编译");
-            }
-            metricObjs.add(m);
+            metricObjs.add(requirePublished(byCode, code, "METRIC"));
         }
         boolean includeCohortDim = false;
         List<SemanticObject> dimObjs = new ArrayList<>();
@@ -197,9 +226,13 @@ public class MultiWarehouseQueryCompiler {
             }
             dimObjs.add(requirePublished(byCode, code, null));
         }
-        if (metricObjs.isEmpty() && dimObjs.isEmpty()) {
-            throw new BizException(ErrorCode.MTD_SEMANTIC_COMPILE_FAILED, "至少需要指定一个已发布指标或维度");
-        }
+
+        int maxRows = Math.max(1, Math.min(2000, ctx.maxRows() <= 0 ? 200 : ctx.maxRows()));
+        Set<String> allowedDatasets = ctx.allowedDatasetIds() == null ? Set.of() : ctx.allowedDatasetIds();
+        // 模式在后续分支确定；语义门禁与路径无关，先用 SINGLE 做共用检查（三路径 error_code 一致）
+        semanticGate.evaluate(new SemanticGateRequest(
+                ws, SemanticExecutionMode.SINGLE, spec, metricObjs, dimObjs, null,
+                allowedDatasets, maxRows, Set.of()));
 
         // 2. 队列/仓库分区裁剪（Filter on cohort / attr.system.cohort）
         Set<String> cohortAllowlist = extractCohortFilter(spec.filters());
@@ -267,6 +300,8 @@ public class MultiWarehouseQueryCompiler {
         boolean hasCohortUnion = fullCoverageWarehouses.size() >= 2
                 && fullCoverageWarehouses.stream().anyMatch(w -> "COHORT_UNION".equalsIgnoreCase(w.getCombineMode()));
         if (hasCohortUnion) {
+            reassertGate(ws, SemanticExecutionMode.COHORT_UNION, spec, metricObjs, dimObjs,
+                    allowedDatasets, maxRows);
             return compileCohortUnion(spec, ctx, fullCoverageWarehouses, bindingsByWarehouse,
                     metricObjs, dimObjs, includeCohortDim, published);
         }
@@ -274,6 +309,8 @@ public class MultiWarehouseQueryCompiler {
         // 情况 2：存在至少 1 个完全覆盖仓库 -> Mode A（SINGLE_ROUTE 单仓直推）
         if (!fullCoverageWarehouses.isEmpty()) {
             WorkspaceWarehouse chosen = fullCoverageWarehouses.get(0);
+            reassertGate(ws, SemanticExecutionMode.SINGLE, spec, metricObjs, dimObjs,
+                    allowedDatasets, maxRows);
             return compileSingleWarehouse(spec, ctx, chosen, bindingsByWarehouse.get(chosen.getId()),
                     metricObjs, dimObjs, includeCohortDim);
         }
@@ -286,6 +323,8 @@ public class MultiWarehouseQueryCompiler {
                 .allMatch(o -> partialWarehouses.stream()
                         .anyMatch(wh -> bindingsByWarehouse.get(wh.getId()).containsKey(o.getId())));
         if (partialWarehouses.size() >= 2 && allCoveredAcrossWarehouses) {
+            reassertGate(ws, SemanticExecutionMode.ENTITY_FEDERATED_JOIN, spec, metricObjs, dimObjs,
+                    allowedDatasets, maxRows);
             return compileFederatedJoin(spec, ctx, activeWarehouses, partialWarehouses, bindingsByWarehouse,
                     mappingsByObj, ltById, ltByDataset, datasetsById, colsById, metricObjs, dimObjs, published);
         }
@@ -319,7 +358,8 @@ public class MultiWarehouseQueryCompiler {
                 refs,
                 fp,
                 pass.exclusions(),
-                List.of()
+                List.of(),
+                buildPlanFingerprint(ExecutionMode.SINGLE_ROUTE, List.of(wh), refs, fp, limit, pass.subQuery().sql())
         );
     }
 
@@ -364,7 +404,8 @@ public class MultiWarehouseQueryCompiler {
                 refs,
                 fp,
                 new ArrayList<>(exclusions),
-                List.of()
+                List.of(),
+                buildPlanFingerprint(ExecutionMode.COHORT_UNION, warehouses, refs, fp, limit, sqlDigest)
         );
     }
 
@@ -494,7 +535,8 @@ public class MultiWarehouseQueryCompiler {
                     refs,
                     fp,
                     List.of(),
-                    List.of()
+                    List.of(),
+                    buildPlanFingerprint(ExecutionMode.ENTITY_FEDERATED_JOIN, participatingWarehouses, refs, fp, limit, safeSql)
             );
         }
 
@@ -609,7 +651,8 @@ public class MultiWarehouseQueryCompiler {
                 refs,
                 fp,
                 List.of(),
-                List.of()
+                List.of(),
+                buildPlanFingerprint(ExecutionMode.ENTITY_FEDERATED_JOIN, participatingWarehouses, refs, fp, limit, safeDuckSql)
         );
     }
 
@@ -952,11 +995,51 @@ public class MultiWarehouseQueryCompiler {
                 single.dialect(), null, single.primaryDatasetId(),
                 single.involvedDatasetIds(), single.sql(), single.columns()
         );
+        ReproducibilityFingerprint repro = single.reproducibilityFingerprint();
+        if (repro == null) {
+            repro = buildPlanFingerprint(ExecutionMode.SINGLE_ROUTE, List.of(),
+                    single.semanticSnapshotRefs(), single.auditFingerprint(),
+                    ctx.maxRows(), single.sql());
+        }
         return new MultiWarehousePlan(
                 ExecutionMode.SINGLE_ROUTE, "NONE", List.of(sub), List.of(), null,
                 single.columns(), single.semanticSnapshotRefs(), single.auditFingerprint(),
-                single.appliedExclusions(), single.warnings()
+                single.appliedExclusions(), single.warnings(), repro
         );
+    }
+
+    private ReproducibilityFingerprint buildPlanFingerprint(ExecutionMode mode,
+                                                            List<WorkspaceWarehouse> warehouses,
+                                                            List<String> refs,
+                                                            String sqlDigest,
+                                                            int maxRows,
+                                                            String sqlPayload) {
+        List<Map<String, String>> snapshots = new ArrayList<>();
+        for (WorkspaceWarehouse wh : warehouses == null ? List.<WorkspaceWarehouse>of() : warehouses) {
+            snapshots.add(Map.of(
+                    "warehouseId", wh.getId() == null ? "" : wh.getId(),
+                    "warehouseCode", wh.getCode() == null ? "" : wh.getCode(),
+                    "datasetId", "",
+                    "snapshotRef", "live"));
+        }
+        List<Map<String, String>> semanticVersions = new ArrayList<>();
+        for (String ref : refs == null ? List.<String>of() : refs) {
+            semanticVersions.add(Map.of("code", ref, "versionNo", "1", "contentDigest", ""));
+        }
+        String gateDigest = SemanticOntologyService.sha256(
+                mode.name() + "|" + (sqlPayload == null ? "" : sqlPayload) + "|" + String.join(",", refs == null ? List.of() : refs));
+        return new ReproducibilityFingerprint(
+                1,
+                snapshots,
+                semanticVersions,
+                List.of(),
+                List.of(Map.of("operatorId", "MultiWarehouseQueryCompiler", "version", "1",
+                        "digest", sqlDigest == null ? "" : sqlDigest)),
+                sqlDigest == null ? "" : sqlDigest,
+                gateDigest,
+                List.of(),
+                Map.of("truncated", false, "maxRows", maxRows),
+                java.time.Instant.now().toString());
     }
 
     private Set<String> extractCohortFilter(List<FilterClause> filters) {
@@ -1021,6 +1104,19 @@ public class MultiWarehouseQueryCompiler {
     private int effectiveLimit(SemanticQuerySpec spec, CompileContext ctx) {
         int maxRows = Math.max(1, Math.min(2000, ctx.maxRows() <= 0 ? 200 : ctx.maxRows()));
         return spec.limit() == null ? maxRows : Math.max(1, Math.min(maxRows, spec.limit()));
+    }
+
+    /** 在确定 ExecutionMode 后再次走同一 SemanticGate，确保三路径共用门禁。 */
+    private void reassertGate(String workspaceId,
+                              SemanticExecutionMode mode,
+                              SemanticQuerySpec spec,
+                              List<SemanticObject> metrics,
+                              List<SemanticObject> dimensions,
+                              Set<String> allowedDatasets,
+                              int maxRows) {
+        semanticGate.evaluate(new SemanticGateRequest(
+                workspaceId, mode, spec, metrics, dimensions, null,
+                allowedDatasets, maxRows, Set.of()));
     }
 
     private String sanitizeAlias(String raw) {

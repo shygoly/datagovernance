@@ -18,6 +18,7 @@ import com.datagov.control.dto.JobDefinitionDtos.SchedulePreview;
 import com.datagov.control.dto.JobDefinitionDtos.UpsertRequest;
 import com.datagov.control.entity.ControlEntities.JobDefinition;
 import com.datagov.control.entity.ControlEntities.JobDefinitionVersion;
+import com.datagov.control.event.ControlEvents;
 import com.datagov.control.mapper.JobDefinitionMapper;
 import com.datagov.control.mapper.JobDefinitionVersionMapper;
 import com.datagov.metadata.service.RuleService;
@@ -25,6 +26,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -51,17 +53,20 @@ public class JobDefinitionService {
     private final CompilerRegistry compilers;
     private final RuleService ruleService;
     private final ObjectMapper objectMapper;
+    private final ApplicationEventPublisher events;
 
     public JobDefinitionService(JobDefinitionMapper jobMapper,
                                 JobDefinitionVersionMapper versionMapper,
                                 CompilerRegistry compilers,
                                 RuleService ruleService,
-                                ObjectMapper objectMapper) {
+                                ObjectMapper objectMapper,
+                                ApplicationEventPublisher events) {
         this.jobMapper = jobMapper;
         this.versionMapper = versionMapper;
         this.compilers = compilers;
         this.ruleService = ruleService;
         this.objectMapper = objectMapper;
+        this.events = events;
     }
 
     // ── 定义 CRUD ───────────────────────────────────────────────────────
@@ -167,7 +172,8 @@ public class JobDefinitionService {
     @Transactional
     public CompileResponse compile(String id) {
         JobDefinition definition = requireInWorkspace(id);
-        CompileResult result = compilers.compile(definition, readConfig(definition));
+        Map<String, Object> config = readConfig(definition);
+        CompileResult result = compilers.compile(definition, config);
 
         Instant now = Instant.now();
         definition.setLastCompiledAt(now);
@@ -186,6 +192,14 @@ public class JobDefinitionService {
         jobMapper.updateById(definition);
 
         log.info("编译完成 id={} 结果={} {}", id, result.succeeded(), result.summary());
+        if (result.succeeded()) {
+            // 事件携带只读快照;消费方(如列级血缘)在装配层监听,Control 不知道它们的存在。
+            events.publishEvent(new ControlEvents.CompileSucceeded(
+                    definition.getWorkspaceId(), definition.getId(), definition.getName(),
+                    definition.getJobType(),
+                    definition.getVersion() == null ? 1 : definition.getVersion(),
+                    result.physicalPlan(), config, now));
+        }
         return CompileResponse.from(result);
     }
 

@@ -20,6 +20,7 @@ import com.datagov.metadata.service.SensitivityService.ReviewRequest;
 import com.datagov.metadata.service.SensitivityService.ScanRequest;
 import com.datagov.metadata.service.SensitivityService.ScanResult;
 import com.datagov.metadata.service.SensitivityService.SensitivityView;
+import com.datagov.metadata.service.lineage.LineageSensitivityPropagator;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -35,6 +36,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -207,6 +209,62 @@ class SensitivityServiceTest {
             assertThat(view.datasetName()).isEqualTo("oa_user");
             assertThat(view.datasetQualifiedName()).isEqualTo("ecology.oa_user");
             verify(sensitivityMapper).updateById(label);
+        }
+    }
+
+    @Nested
+    @DisplayName("血缘传播触发")
+    class LineagePropagation {
+
+        private LineageSensitivityPropagator propagator;
+        private SensitivityService withPropagator;
+
+        @BeforeEach
+        void wire() {
+            propagator = mock(LineageSensitivityPropagator.class);
+            withPropagator = new SensitivityService(ruleMapper, sensitivityMapper, scanRunMapper,
+                    scanFindingMapper, datasetMapper, columnMapper, new ObjectMapper(), propagator);
+        }
+
+        @Test
+        @DisplayName("review 为 CONFIRMED 后触发下游传播；REJECTED 不触发")
+        void reviewConfirmedTriggers() {
+            ColumnSensitivity label = label("sens_1", "L4");
+            when(sensitivityMapper.selectOne(any())).thenReturn(label);
+
+            withPropagator.review("sens_1", new ReviewRequest("CONFIRMED", "L4"));
+            verify(propagator).propagateFromConfirmedLabel(WORKSPACE, "col_1");
+
+            withPropagator.review("sens_1", new ReviewRequest("REJECTED", null));
+            verify(propagator, times(1)).propagateFromConfirmedLabel(any(), any());
+        }
+
+        @Test
+        @DisplayName("batchReview：同一列只触发一次，REJECTED 不触发")
+        void batchConfirmedTriggersOncePerColumn() {
+            ColumnSensitivity first = label("sens_1", "L3");
+            ColumnSensitivity second = label("sens_2", "L3"); // 同一 col_1
+            when(sensitivityMapper.selectList(any())).thenReturn(List.of(first, second));
+
+            withPropagator.batchReview(new BatchReviewRequest(List.of("sens_1", "sens_2"), "CONFIRMED", null));
+            verify(propagator, times(1)).propagateFromConfirmedLabel(WORKSPACE, "col_1");
+
+            org.mockito.Mockito.clearInvocations(propagator);
+            withPropagator.batchReview(new BatchReviewRequest(List.of("sens_1"), "REJECTED", null));
+            verify(propagator, never()).propagateFromConfirmedLabel(any(), any());
+        }
+
+        @Test
+        @DisplayName("传播失败不回滚人工复核结论")
+        void propagationFailureDoesNotBreakReview() {
+            ColumnSensitivity label = label("sens_1", "L4");
+            when(sensitivityMapper.selectOne(any())).thenReturn(label);
+            org.mockito.Mockito.doThrow(new IllegalStateException("boom"))
+                    .when(propagator).propagateFromConfirmedLabel(any(), any());
+
+            SensitivityView view = withPropagator.review("sens_1", new ReviewRequest("CONFIRMED", "L4"));
+
+            assertThat(view.status()).isEqualTo("CONFIRMED");
         }
     }
 

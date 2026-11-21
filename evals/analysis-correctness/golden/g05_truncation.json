@@ -1,0 +1,8 @@
+{
+  "id": "g05_truncation",
+  "kind": "gate_pass",
+  "limit": 5000,
+  "max_rows": 200,
+  "expect_truncated": true,
+  "expect_effective_limit": 200
+}

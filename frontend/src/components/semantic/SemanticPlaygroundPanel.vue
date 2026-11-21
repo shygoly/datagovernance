@@ -34,6 +34,13 @@ const compileForm = reactive({
 
 const subgraphResult = ref<SemanticSubgraphResult | null>(null)
 const compiledResult = ref<CompiledSemanticQuery | null>(null)
+const compileReject = ref<{
+  errorCode: string
+  message: string
+  location?: string
+  allowed?: string[]
+  repairHint?: string
+} | null>(null)
 const multiPlanResult = ref<MultiWarehousePlan | null>(null)
 const previewAnswer = ref<InsightAnswer | null>(null)
 
@@ -73,12 +80,27 @@ async function runCompile() {
   }
   loading.value = true
   previewAnswer.value = null
+  compiledResult.value = null
+  compileReject.value = null
   try {
-    compiledResult.value = await semanticApi.compileSemantic({
+    const result = await semanticApi.compileAndValidate({
       metrics: compileForm.metrics,
       dimensions: compileForm.dimensions,
       limit: compileForm.limit,
     })
+    if (result.ok && result.compiled) {
+      compiledResult.value = result.compiled
+    } else if (result.reject) {
+      compileReject.value = result.reject
+      ElMessage.warning(`${result.reject.errorCode}: ${result.reject.repairHint || result.reject.message}`)
+    } else {
+      // 兼容旧 compile 端点
+      compiledResult.value = await semanticApi.compileSemantic({
+        metrics: compileForm.metrics,
+        dimensions: compileForm.dimensions,
+        limit: compileForm.limit,
+      })
+    }
   } finally {
     loading.value = false
   }
@@ -289,7 +311,24 @@ async function runPreview() {
       </template>
 
       <template v-else>
-        <el-empty v-if="!compiledResult" description="选择指标与维度后点击“确定性编译 SQL”" />
+        <el-alert
+          v-if="compileReject"
+          type="error"
+          :closable="false"
+          show-icon
+          class="reject-alert"
+          :title="`${compileReject.errorCode}: ${compileReject.message}`"
+        >
+          <p v-if="compileReject.location" class="reject-meta">位置: {{ compileReject.location }}</p>
+          <p v-if="compileReject.repairHint" class="reject-meta">修复建议: {{ compileReject.repairHint }}</p>
+          <p v-if="compileReject.allowed?.length" class="reject-meta">
+            允许值: {{ compileReject.allowed.join(', ') }}
+          </p>
+        </el-alert>
+        <el-empty
+          v-else-if="!compiledResult"
+          description="选择指标与维度后点击“确定性编译 SQL”"
+        />
         <div v-else class="result-stack">
           <div class="meta-bar">
             <el-tag size="small">{{ compiledResult.dialect }}</el-tag>
@@ -338,6 +377,15 @@ async function runPreview() {
 </template>
 
 <style scoped>
+.reject-alert {
+  margin-bottom: var(--dg-space-md);
+}
+.reject-meta {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--dg-text-muted);
+  line-height: 1.4;
+}
 .playground {
   display: grid;
   grid-template-columns: 360px minmax(0, 1fr);

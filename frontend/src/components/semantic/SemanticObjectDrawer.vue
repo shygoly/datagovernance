@@ -49,6 +49,11 @@ const form = reactive({
   allowedDimensionsText: '',
   hierarchyText: '',
   isTimeDimension: false,
+  additivityKind: 'additive',
+  windowGroupingsText: '',
+  nonAdditiveDimText: '',
+  lodType: 'NONE',
+  lodDimensionsText: '',
   specExtraJson: '',
 })
 
@@ -92,6 +97,11 @@ function hydrateForm(obj: SemanticObject | null) {
     form.allowedDimensionsText = ''
     form.hierarchyText = ''
     form.isTimeDimension = false
+    form.additivityKind = 'additive'
+    form.windowGroupingsText = ''
+    form.nonAdditiveDimText = ''
+    form.lodType = 'NONE'
+    form.lodDimensionsText = ''
     form.specExtraJson = '{}'
     links.value = []
     versions.value = []
@@ -115,6 +125,19 @@ function hydrateForm(obj: SemanticObject | null) {
     : ''
   form.hierarchyText = Array.isArray(spec.hierarchy) ? spec.hierarchy.join(', ') : ''
   form.isTimeDimension = Boolean(spec.isTimeDimension)
+  const additivity = (spec.additivity as Record<string, unknown> | undefined) || {}
+  form.additivityKind = String(additivity.kind || 'additive')
+  form.windowGroupingsText = Array.isArray(additivity.window_groupings)
+    ? (additivity.window_groupings as string[]).join(', ')
+    : ''
+  form.nonAdditiveDimText = Array.isArray(additivity.non_additive_dim)
+    ? (additivity.non_additive_dim as string[]).join(', ')
+    : ''
+  const lod = (spec.lod as Record<string, unknown> | undefined) || {}
+  form.lodType = String(lod.type || 'NONE')
+  form.lodDimensionsText = Array.isArray(lod.dimensions)
+    ? (lod.dimensions as string[]).join(', ')
+    : ''
   form.specExtraJson = JSON.stringify(spec, null, 2)
   void loadSubResources(obj.id)
 }
@@ -144,8 +167,36 @@ function buildSpecPayload(): Record<string, unknown> {
       .map((s) => s.trim())
       .filter(Boolean)
     if (allowed.length) out.allowedDimensions = allowed
+    const windowGroupings = form.windowGroupingsText
+      .split(/[,，]/)
+      .map((s) => s.trim())
+      .filter(Boolean)
+    const nonAdditive = form.nonAdditiveDimText
+      .split(/[,，]/)
+      .map((s) => s.trim())
+      .filter(Boolean)
+    const additivity: Record<string, unknown> = { kind: form.additivityKind }
+    if (form.additivityKind === 'semi_additive') {
+      if (windowGroupings.length) additivity.window_groupings = windowGroupings
+      if (nonAdditive.length) additivity.non_additive_dim = nonAdditive
+    }
+    out.additivity = additivity
+    const lodDims = form.lodDimensionsText
+      .split(/[,，]/)
+      .map((s) => s.trim())
+      .filter(Boolean)
+    out.lod = {
+      type: form.lodType,
+      dimensions: lodDims,
+    }
     if (currentObj.value?.spec?.defaultFilters) {
       out.defaultFilters = currentObj.value.spec.defaultFilters
+    }
+    // 保留其余六维字段（filters/calendar/composition/locality）若已有
+    for (const key of ['filters', 'calendar', 'composition', 'locality', 'nullAsZero'] as const) {
+      if (currentObj.value?.spec?.[key] !== undefined) {
+        out[key] = currentObj.value.spec[key]
+      }
     }
     return out
   }
@@ -329,6 +380,10 @@ watch(
                   <el-option label="CONCEPT（领域概念）" value="CONCEPT" />
                   <el-option label="PROCESS（业务流程）" value="PROCESS" />
                 </el-option-group>
+                <el-option-group label="Layer 3 · 目标与动作契约（数据自治）">
+                  <el-option label="TARGET（硬不变量 + 软目标）" value="TARGET" />
+                  <el-option label="ACTION_TYPE（授权/包络/补偿契约）" value="ACTION_TYPE" />
+                </el-option-group>
               </el-select>
             </el-form-item>
             <el-form-item label="权威 Standard 引用（METRIC 发布必填 · C2）">
@@ -379,6 +434,47 @@ watch(
                   v-model="form.allowedDimensionsText"
                   :disabled="!canManage"
                   placeholder="attr.org.region, dim.time.biz_date"
+                  class="mono-input"
+                />
+              </el-form-item>
+            </div>
+            <div class="two-col metric-6d">
+              <el-form-item label="加性（additivity.kind）">
+                <el-select v-model="form.additivityKind" :disabled="!canManage" style="width: 100%">
+                  <el-option label="additive" value="additive" />
+                  <el-option label="semi_additive" value="semi_additive" />
+                  <el-option label="non_additive" value="non_additive" />
+                </el-select>
+              </el-form-item>
+              <el-form-item label="LOD 类型">
+                <el-select v-model="form.lodType" :disabled="!canManage" style="width: 100%">
+                  <el-option label="NONE" value="NONE" />
+                  <el-option label="FIXED" value="FIXED" />
+                  <el-option label="INCLUDE" value="INCLUDE" />
+                  <el-option label="EXCLUDE" value="EXCLUDE" />
+                </el-select>
+              </el-form-item>
+              <el-form-item v-if="form.additivityKind === 'semi_additive'" label="window_groupings">
+                <el-input
+                  v-model="form.windowGroupingsText"
+                  :disabled="!canManage"
+                  placeholder="attr.account.id"
+                  class="mono-input"
+                />
+              </el-form-item>
+              <el-form-item v-if="form.additivityKind === 'semi_additive'" label="non_additive_dim">
+                <el-input
+                  v-model="form.nonAdditiveDimText"
+                  :disabled="!canManage"
+                  placeholder="attr.account.id"
+                  class="mono-input"
+                />
+              </el-form-item>
+              <el-form-item v-if="form.lodType !== 'NONE'" label="LOD 维度 code">
+                <el-input
+                  v-model="form.lodDimensionsText"
+                  :disabled="!canManage"
+                  placeholder="attr.org.dept"
                   class="mono-input"
                 />
               </el-form-item>

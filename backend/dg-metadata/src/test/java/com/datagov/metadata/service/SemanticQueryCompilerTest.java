@@ -12,6 +12,7 @@ import com.datagov.metadata.mapper.CatalogColumnMapper;
 import com.datagov.metadata.mapper.CatalogDatasetMapper;
 import com.datagov.metadata.mapper.SemanticObjectMapper;
 import com.datagov.metadata.mapper.SemanticValueDictMapper;
+import com.datagov.metadata.service.SemanticQueryCompiler.AtModifier;
 import com.datagov.metadata.service.SemanticQueryCompiler.CompileContext;
 import com.datagov.metadata.service.SemanticQueryCompiler.CompiledSemanticQuery;
 import com.datagov.metadata.service.SemanticQueryCompiler.FilterClause;
@@ -20,6 +21,9 @@ import com.datagov.metadata.service.SemanticQueryCompiler.SemanticQuerySpec;
 import com.datagov.metadata.service.SemanticQueryCompiler.TimeRange;
 import com.datagov.metadata.service.SemanticValueLinkingService.NormalizedTimeRange;
 import com.datagov.metadata.service.SemanticValueLinkingService.ValueMatch;
+import com.datagov.metadata.service.gate.CompileReject;
+import com.datagov.metadata.service.gate.CompileRejectException;
+import com.datagov.metadata.service.gate.SemanticCompileErrorCode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -113,6 +117,12 @@ class SemanticQueryCompilerTest {
                 .contains("LIMIT 50");
         assertThat(res.appliedExclusions()).hasSize(2);
         assertThat(res.auditFingerprint()).hasSize(64);
+        assertThat(res.reproducibilityFingerprint()).isNotNull();
+        assertThat(res.reproducibilityFingerprint().schemaVersion()).isEqualTo(1);
+        assertThat(res.reproducibilityFingerprint().sqlDigest()).hasSize(64);
+        assertThat(res.reproducibilityFingerprint().gateDigest()).isNotBlank();
+        assertThat(res.reproducibilityFingerprint().truncation()).containsKeys("truncated", "maxRows");
+        res.reproducibilityFingerprint().requireComplete();
     }
 
     @Test
@@ -154,6 +164,72 @@ class SemanticQueryCompilerTest {
     }
 
     @Test
+    @DisplayName("多 STRUCTURAL 路径 → MULTI_FACT_AMBIGUOUS_PATH；USING 消歧后可编译")
+    void ambiguousStructuralPathRequiresUsing() {
+        SemanticObject gmv = obj("m_gmv", "metric.order.gmv", "有效GMV", "METRIC", "STD-GMV",
+                "{\"metricKind\":\"BASE\",\"aggregation\":\"SUM\"}");
+        SemanticObject deptName = obj("a_dept", "attr.org.dept_name", "科室名称", "ATTRIBUTE", null, "{}");
+        SemanticObject bridgeOrg = obj("e_org", "entity.org", "组织实体", "ENTITY", null, "{}");
+        SemanticObject bridgeDept = obj("e_dept", "entity.dept", "科室实体", "ENTITY", null, "{}");
+
+        SemanticMapping mGmv = map("mp1", "m_gmv", "ds_order", "col_amt", "MEASURE", false, 10);
+        SemanticMapping mDept = map("mp2", "a_dept", "ds_dim_dept", "col_dept_name", "DESC", true, 10);
+        SemanticMapping mBridgeOrgOrder = map("mp3", "e_org", "ds_order", "col_org", "ID", false, 10);
+        SemanticMapping mBridgeOrgDim = map("mp4", "e_org", "ds_dim_dept", "col_org_d", "ID", true, 10);
+        SemanticMapping mBridgeDeptOrder = map("mp5", "e_dept", "ds_order", "col_dept", "ID", false, 10);
+        SemanticMapping mBridgeDeptDim = map("mp6", "e_dept", "ds_dim_dept", "col_dept_d", "ID", true, 10);
+
+        SemanticLink pathOrg = new SemanticLink();
+        pathOrg.setId("l_org");
+        pathOrg.setFromObjectId("e_org");
+        pathOrg.setToObjectId("e_org");
+        pathOrg.setEdgeCategory("STRUCTURAL");
+        pathOrg.setLinkType("RELATES_TO");
+        pathOrg.setJoinSpecJson("[{\"leftColumn\":\"org_id\",\"rightColumn\":\"id\",\"joinType\":\"LEFT\"}]");
+        pathOrg.setStatus("PUBLISHED");
+
+        SemanticLink pathDept = new SemanticLink();
+        pathDept.setId("l_dept");
+        pathDept.setFromObjectId("e_dept");
+        pathDept.setToObjectId("e_dept");
+        pathDept.setEdgeCategory("STRUCTURAL");
+        pathDept.setLinkType("RELATES_TO");
+        pathDept.setJoinSpecJson("[{\"leftColumn\":\"dept_id\",\"rightColumn\":\"id\",\"joinType\":\"LEFT\"}]");
+        pathDept.setStatus("PUBLISHED");
+
+        when(ontologyService.listPublishedObjectsInternal(WS))
+                .thenReturn(List.of(gmv, deptName, bridgeOrg, bridgeDept));
+        when(ontologyService.listWorkspaceMappingsInternal(WS))
+                .thenReturn(List.of(mGmv, mDept, mBridgeOrgOrder, mBridgeOrgDim, mBridgeDeptOrder, mBridgeDeptDim));
+        when(ontologyService.listPublishedLinksInternal(WS)).thenReturn(List.of(pathOrg, pathDept));
+        when(datasetMapper.selectList(any())).thenReturn(List.of(
+                ds("ds_order", "dwd_order"), ds("ds_dim_dept", "dim_dept")));
+        when(columnMapper.selectList(any())).thenReturn(List.of(
+                col("col_amt", "ds_order", "amount"),
+                col("col_dept_name", "ds_dim_dept", "dept_name")));
+
+        SemanticQuerySpec ambiguous = new SemanticQuerySpec(
+                null, List.of("metric.order.gmv"), List.of("attr.org.dept_name"),
+                List.of(), null, List.of(), 100, null, List.of());
+        assertThatThrownBy(() -> compiler.compile(ambiguous,
+                new CompileContext(WS, Set.of("ds_order", "ds_dim_dept"), "POSTGRESQL", 200)))
+                .isInstanceOf(CompileRejectException.class)
+                .satisfies(ex -> {
+                    CompileReject reject = ((CompileRejectException) ex).reject();
+                    assertThat(reject.errorCode()).isEqualTo(SemanticCompileErrorCode.MULTI_FACT_AMBIGUOUS_PATH.name());
+                    assertThat(reject.allowed()).contains("entity.org", "entity.dept");
+                });
+
+        SemanticQuerySpec disambiguated = new SemanticQuerySpec(
+                null, List.of("metric.order.gmv"), List.of("attr.org.dept_name"),
+                List.of(), null, List.of(), 100, null,
+                List.of(new AtModifier("USING", "entity.dept", null)));
+        CompiledSemanticQuery ok = compiler.compile(disambiguated,
+                new CompileContext(WS, Set.of("ds_order", "ds_dim_dept"), "POSTGRESQL", 200));
+        assertThat(ok.sql()).contains("LEFT JOIN dim_dept t1 ON t0.dept_id = t1.id");
+    }
+
+    @Test
     @DisplayName("多事实表防扇出（Fan-out CTE）+ 衍生比率除零保护（NULLIF）")
     void multiFactFanoutCteAndSafeDerivedRatio() {
         SemanticObject readmit = obj("m_num", "metric.icu.readmit_cnt", "再入院数", "METRIC", "STD-1",
@@ -189,12 +265,32 @@ class SemanticQueryCompilerTest {
         assertThat(res.sql())
                 .startsWith("WITH cte_fact_0 AS")
                 .contains("cte_fact_1 AS")
-                .contains("LEFT JOIN cte_fact_1 ON cte_fact_0.attr_org_dept = cte_fact_1.attr_org_dept")
-                .contains("NULLIF(cte_fact_1.m_1, 0)");
+                .contains("FULL OUTER JOIN cte_fact_1 ON cte_fact_0.attr_org_dept IS NOT DISTINCT FROM cte_fact_1.attr_org_dept")
+                .contains("NULLIF(CAST(cte_fact_1.m_1 AS DOUBLE), 0)");
     }
 
     @Test
-    @DisplayName("C4/C5 ACL 闸门：用户无权访问底层物理数据集时编译拒绝（PLT_FORBIDDEN）")
+    @DisplayName("at_modifiers 不可关闭 EXCLUDES/RLS")
+    void atModifiersCannotBypassSecurity() {
+        SemanticObject gmv = obj("m_gmv", "metric.order.gmv", "有效GMV", "METRIC", "STD-GMV",
+                "{\"metricKind\":\"BASE\",\"aggregation\":\"SUM\"}");
+        SemanticMapping mGmv = map("mp1", "m_gmv", "ds_order", "col_amt", "MEASURE", false, 10);
+        when(ontologyService.listPublishedObjectsInternal(WS)).thenReturn(List.of(gmv));
+        when(ontologyService.listWorkspaceMappingsInternal(WS)).thenReturn(List.of(mGmv));
+        when(ontologyService.listPublishedLinksInternal(WS)).thenReturn(List.of());
+
+        assertThatThrownBy(() -> compiler.compile(
+                new SemanticQuerySpec(null, List.of("metric.order.gmv"), List.of(),
+                        List.of(), null, List.of(), 10, null,
+                        List.of(new AtModifier("IGNORE_EXCLUDES", null, null))),
+                new CompileContext(WS, Set.of("ds_order"), "POSTGRESQL", 200)))
+                .isInstanceOf(CompileRejectException.class)
+                .satisfies(ex -> assertThat(((CompileRejectException) ex).reject().errorCode())
+                        .isEqualTo(SemanticCompileErrorCode.SECURITY_FIELD_FORBIDDEN.name()));
+    }
+
+    @Test
+    @DisplayName("C4/C5 ACL 闸门：用户无权访问底层物理数据集时类型化拒绝（DATASET_ACL_DENIED via SemanticGate）")
     void forbiddenDatasetBlockedAtCompileTime() {
         SemanticObject gmv = obj("m_gmv", "metric.order.gmv", "有效GMV", "METRIC", "STD-GMV",
                 "{\"metricKind\":\"BASE\",\"aggregation\":\"SUM\"}");
@@ -207,9 +303,13 @@ class SemanticQueryCompilerTest {
         assertThatThrownBy(() -> compiler.compile(
                 new SemanticQuerySpec(null, List.of("metric.order.gmv"), List.of(), List.of(), null, List.of(), 10),
                 new CompileContext(WS, Set.of("ds_other"), "STARROCKS", 200)))
-                .isInstanceOf(BizException.class)
-                .extracting(e -> ((BizException) e).errorCode())
-                .isEqualTo(ErrorCode.PLT_FORBIDDEN);
+                .isInstanceOf(CompileRejectException.class)
+                .satisfies(ex -> {
+                    CompileRejectException cre = (CompileRejectException) ex;
+                    assertThat(cre.errorCode()).isEqualTo(ErrorCode.MTD_SEMANTIC_COMPILE_FAILED);
+                    assertThat(cre.reject().errorCode())
+                            .isEqualTo(SemanticCompileErrorCode.DATASET_ACL_DENIED.name());
+                });
     }
 
     @Test

@@ -22,6 +22,13 @@ const DEFAULT_READ_ONLY_TOOLS = new Set([
   'test_datasource',
   'list_catalog_sources',
   'navigate_workspace',
+  'list_mapping_proposals',
+  'list_evolution_proposals',
+  'list_clinical_qc_findings',
+  'lineage_trace_column',
+  'lineage_impact_analysis',
+  'autonomy_compile_flow',
+  'autonomy_trace_explain',
 ])
 
 export function loadSkills(skillsDir: string): Map<string, SkillDefinition> {

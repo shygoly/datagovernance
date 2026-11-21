@@ -81,6 +81,18 @@ dg:
     # 结构浏览的快照有效期;超过则重新探测目标库(功能 5)
     snapshot-ttl-minutes: 30
 
+  lineage:
+    parser:
+      # SQLGlot sidecar(lineage-parser-service)地址。留空则关闭 SQL 列级血缘解析，
+      # 所有解析请求降级为 INCONCLUSIVE(C8)，不影响其余血缘通道。
+      base-url: ${DG_LINEAGE_PARSER_URL:http://127.0.0.1:8091}
+      # 单次解析超时。超时按 INCONCLUSIVE 降级，不阻塞作业编译 / 目录采集。
+      timeout-ms: ${DG_LINEAGE_PARSER_TIMEOUT_MS:5000}
+      circuit:
+        # 连续失败达到阈值后熔断，冷却期内直接返回 INCONCLUSIVE，不再发请求。
+        failure-threshold: 3
+        cooldown-seconds: 30
+
   insight:
     # 原生语义问数网关（OpenSpec: semantic-ontology-kernel，已完全替代外部 SuperSonic）。
     engine: ${DG_INSIGHT_ENGINE:native}

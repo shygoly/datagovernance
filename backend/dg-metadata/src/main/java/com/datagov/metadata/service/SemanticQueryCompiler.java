@@ -11,8 +11,18 @@ import com.datagov.metadata.entity.SemanticEntities.SemanticMapping;
 import com.datagov.metadata.entity.SemanticEntities.SemanticObject;
 import com.datagov.metadata.mapper.CatalogColumnMapper;
 import com.datagov.metadata.mapper.CatalogDatasetMapper;
+import com.datagov.common.audit.ReproducibilityFingerprint;
+import com.datagov.metadata.service.gate.CompileReject;
+import com.datagov.metadata.service.gate.CompileRejectException;
+import com.datagov.metadata.service.gate.NullAsZeroGuard;
+import com.datagov.metadata.service.gate.SemanticCompileErrorCode;
+import com.datagov.metadata.service.gate.SemanticExecutionMode;
+import com.datagov.metadata.service.gate.SemanticGatePass;
+import com.datagov.metadata.service.gate.SemanticGateRequest;
+import com.datagov.metadata.service.gate.SemanticGateService;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayDeque;
@@ -55,15 +65,28 @@ public class SemanticQueryCompiler {
     private final CatalogDatasetMapper datasetMapper;
     private final CatalogColumnMapper columnMapper;
     private final ObjectMapper json;
+    private final SemanticGateService semanticGate;
+    private final NullAsZeroGuard nullAsZeroGuard = new NullAsZeroGuard();
 
     public SemanticQueryCompiler(SemanticOntologyService ontologyService,
                                  CatalogDatasetMapper datasetMapper,
                                  CatalogColumnMapper columnMapper,
                                  ObjectMapper json) {
+        this(ontologyService, datasetMapper, columnMapper, json, new SemanticGateService(json));
+    }
+
+    /** Spring 注入入口：多构造器时必须显式 @Autowired，否则会回退无参构造并启动失败。 */
+    @Autowired
+    public SemanticQueryCompiler(SemanticOntologyService ontologyService,
+                                 CatalogDatasetMapper datasetMapper,
+                                 CatalogColumnMapper columnMapper,
+                                 ObjectMapper json,
+                                 SemanticGateService semanticGate) {
         this.ontologyService = ontologyService;
         this.datasetMapper = datasetMapper;
         this.columnMapper = columnMapper;
         this.json = json;
+        this.semanticGate = semanticGate == null ? new SemanticGateService(json) : semanticGate;
     }
 
     // ── Spec & Result Records ────────────────────────────────────────────
@@ -77,6 +100,10 @@ public class SemanticQueryCompiler {
     public record OrderClause(String objectCode, String dir) {
     }
 
+    /** SMQ at_modifiers（v0：USING 路径消歧 / SET_GRAIN） */
+    public record AtModifier(String op, String rel, String grain) {
+    }
+
     public record SemanticQuerySpec(
             String semanticViewId,
             List<String> metrics,
@@ -84,8 +111,20 @@ public class SemanticQueryCompiler {
             List<FilterClause> filters,
             TimeRange timeRange,
             List<OrderClause> orderBy,
-            Integer limit
+            Integer limit,
+            String grain,
+            List<AtModifier> atModifiers
     ) {
+        /** 兼容旧 7 参构造（无 grain / atModifiers） */
+        public SemanticQuerySpec(String semanticViewId,
+                                 List<String> metrics,
+                                 List<String> dimensions,
+                                 List<FilterClause> filters,
+                                 TimeRange timeRange,
+                                 List<OrderClause> orderBy,
+                                 Integer limit) {
+            this(semanticViewId, metrics, dimensions, filters, timeRange, orderBy, limit, null, List.of());
+        }
     }
 
     public record CompileContext(
@@ -109,8 +148,22 @@ public class SemanticQueryCompiler {
             String auditFingerprint,
             List<String> appliedExclusions,
             boolean fanoutCteUsed,
-            List<String> warnings
+            List<String> warnings,
+            ReproducibilityFingerprint reproducibilityFingerprint
     ) {
+        public CompiledSemanticQuery(String sql,
+                                     String dialect,
+                                     String primaryDatasetId,
+                                     List<String> involvedDatasetIds,
+                                     List<CompiledColumn> columns,
+                                     List<String> semanticSnapshotRefs,
+                                     String auditFingerprint,
+                                     List<String> appliedExclusions,
+                                     boolean fanoutCteUsed,
+                                     List<String> warnings) {
+            this(sql, dialect, primaryDatasetId, involvedDatasetIds, columns, semanticSnapshotRefs,
+                    auditFingerprint, appliedExclusions, fanoutCteUsed, warnings, null);
+        }
     }
 
     // ── Main Compile Entry ───────────────────────────────────────────────
@@ -121,15 +174,11 @@ public class SemanticQueryCompiler {
         }
         List<String> metricCodes = spec.metrics() == null ? List.of() : spec.metrics();
         List<String> dimCodes = spec.dimensions() == null ? List.of() : spec.dimensions();
-        if (metricCodes.isEmpty() && dimCodes.isEmpty()) {
-            throw new BizException(ErrorCode.MTD_SEMANTIC_COMPILE_FAILED, "至少需要指定一个已发布指标或维度");
-        }
 
         String ws = ctx.workspaceId();
         String dialect = ctx.dialect() == null || ctx.dialect().isBlank()
                 ? "STARROCKS" : ctx.dialect().trim().toUpperCase(Locale.ROOT);
         int maxRows = Math.max(1, Math.min(2000, ctx.maxRows() <= 0 ? 200 : ctx.maxRows()));
-        int effectiveLimit = spec.limit() == null ? maxRows : Math.max(1, Math.min(maxRows, spec.limit()));
 
         // 加载已发布语义快照
         List<SemanticObject> publishedObjects = ontologyService.listPublishedObjectsInternal(ws);
@@ -142,16 +191,13 @@ public class SemanticQueryCompiler {
                 .collect(Collectors.groupingBy(SemanticMapping::getObjectId));
         List<SemanticLink> publishedLinks = ontologyService.listPublishedLinksInternal(ws);
 
-        // 1. 解析并校验所有指标、维度与过滤对象
+        rejectForbiddenAtModifiers(spec.atModifiers());
+
+        // 1. 解析已发布指标/维度（Standard、允许维、时间窗、ACL 等统一走 SemanticGate）
         List<SemanticObject> metricObjs = new ArrayList<>();
         Set<String> allReferencedObjectIds = new LinkedHashSet<>();
         for (String code : metricCodes) {
             SemanticObject m = requirePublished(byCode, code, "METRIC");
-            // C2 闸门：指标必须具备 standardRef
-            if (m.getStandardRef() == null || m.getStandardRef().isBlank()) {
-                throw new BizException(ErrorCode.MTD_SEMANTIC_COMPILE_FAILED,
-                        "指标 " + m.getCode() + " 缺少 Standard 口径绑定（CONSTITUTION C2），拒绝编译");
-            }
             metricObjs.add(m);
             allReferencedObjectIds.add(m.getId());
         }
@@ -161,22 +207,6 @@ public class SemanticQueryCompiler {
             SemanticObject d = requirePublished(byCode, code, null);
             dimObjs.add(d);
             allReferencedObjectIds.add(d.getId());
-        }
-
-        // 粒度/允许维度校验
-        for (SemanticObject m : metricObjs) {
-            Map<String, Object> mSpec = readJsonMap(m.getSpecJson());
-            if (mSpec.get("allowedDimensions") instanceof List<?> allowed && !allowed.isEmpty()) {
-                Set<String> allowedSet = allowed.stream()
-                        .map(v -> String.valueOf(v).toLowerCase(Locale.ROOT)).collect(Collectors.toSet());
-                for (SemanticObject d : dimObjs) {
-                    if (!allowedSet.contains(d.getCode().toLowerCase(Locale.ROOT))
-                            && !allowedSet.contains(d.getId().toLowerCase(Locale.ROOT))) {
-                        throw new BizException(ErrorCode.MTD_SEMANTIC_COMPILE_FAILED,
-                                "维度 " + d.getCode() + " 不在指标 " + m.getCode() + " 允许的分析粒度范围内");
-                    }
-                }
-            }
         }
 
         // 展开复合衍生指标依赖的底层基础指标
@@ -238,15 +268,19 @@ public class SemanticQueryCompiler {
             resolvedTime = new ResolvedTimeFilter(to, tm, spec.timeRange().start(), spec.timeRange().end());
         }
 
-        // 2. ACL 物理表权限闸门（C4 / C5）
-        if (ctx.allowedDatasetIds() != null) {
-            for (String dsId : requiredDatasetIds) {
-                if (!ctx.allowedDatasetIds().contains(dsId)) {
-                    throw new BizException(ErrorCode.PLT_FORBIDDEN,
-                            "当前用户无权访问语义查询涉及的物理数据集: " + dsId);
-                }
-            }
-        }
+        // 2. 统一 SemanticGate（C2 Standard / 允许维 / 时间窗 / 数据集 ACL / 截断）
+        Set<String> allowedDatasets = ctx.allowedDatasetIds() == null ? Set.of() : ctx.allowedDatasetIds();
+        SemanticGatePass gatePass = semanticGate.evaluate(new SemanticGateRequest(
+                ws,
+                SemanticExecutionMode.SINGLE,
+                spec,
+                metricObjs,
+                dimObjs,
+                spec.grain(),
+                allowedDatasets,
+                maxRows,
+                requiredDatasetIds));
+        int effectiveLimit = gatePass.effectiveLimit();
 
         // 加载涉及的物理表名与列名
         Map<String, CatalogDataset> datasets = requiredDatasetIds.isEmpty() ? Map.of()
@@ -263,12 +297,46 @@ public class SemanticQueryCompiler {
         // 3. 判断单事实表直出 vs 多事实表防扇出 CTE 编译
         boolean useFanoutCte = factDatasetIds.size() >= 2;
         List<String> warnings = new ArrayList<>();
+        if (gatePass.truncated()) {
+            warnings.add("请求 limit 超过门禁 maxRows，已截断为 " + effectiveLimit
+                    + "（gateDigest=" + gatePass.gateDigest().substring(0, Math.min(12, gatePass.gateDigest().length())) + "）");
+        }
+        for (SemanticObject m : metricObjs) {
+            warnSemiAdditiveAndLod(m, warnings);
+        }
+        List<SemanticObject> grainDims = applyLodGrain(dimObjs, resolvedMetrics, byCode, warnings);
+        // LOD 改写后若引入新维，补齐映射选择
+        Map<String, SemanticMapping> grainDimMappings = new LinkedHashMap<>(chosenDimMappings);
+        for (SemanticObject d : grainDims) {
+            if (!grainDimMappings.containsKey(d.getCode())) {
+                SemanticMapping m = chooseMapping(d, mappingsByObj.getOrDefault(d.getId(), List.of()), factDatasetIds);
+                grainDimMappings.put(d.getCode(), m);
+                requiredDatasetIds.add(m.getCatalogDatasetId());
+                if (m.getCatalogColumnId() != null) {
+                    requiredColumnIds.add(m.getCatalogColumnId());
+                }
+            }
+        }
+        // LOD 可能新增数据集/列，刷新缓存
+        if (requiredDatasetIds.size() > datasets.size()) {
+            datasets = requiredDatasetIds.isEmpty() ? Map.of()
+                    : datasetMapper.selectList(new LambdaQueryWrapper<CatalogDataset>()
+                            .eq(CatalogDataset::getWorkspaceId, ws)
+                            .in(CatalogDataset::getId, requiredDatasetIds))
+                    .stream().collect(Collectors.toMap(CatalogDataset::getId, Function.identity(), (a, b) -> a));
+        }
+        if (requiredColumnIds.size() > columns.size()) {
+            columns = requiredColumnIds.isEmpty() ? Map.of()
+                    : columnMapper.selectList(new LambdaQueryWrapper<CatalogColumn>()
+                            .in(CatalogColumn::getId, requiredColumnIds))
+                    .stream().collect(Collectors.toMap(CatalogColumn::getId, Function.identity(), (a, b) -> a));
+        }
         String rawSql;
         List<CompiledColumn> outputColumns = new ArrayList<>();
 
         if (useFanoutCte) {
             rawSql = compileMultiFactCte(
-                    dimObjs, resolvedMetrics, factDatasetIds, mappingsByObj,
+                    grainDims, resolvedMetrics, factDatasetIds, mappingsByObj,
                     resolvedFilters, resolvedTime, spec.orderBy(), effectiveLimit,
                     datasets, columns, dialect, outputColumns, warnings);
         } else {
@@ -276,9 +344,10 @@ public class SemanticQueryCompiler {
                     ? requiredDatasetIds.iterator().next()
                     : factDatasetIds.iterator().next();
             rawSql = compileSingleFactOrStarJoin(
-                    baseDatasetId, dimObjs, chosenDimMappings, resolvedMetrics,
+                    baseDatasetId, grainDims, grainDimMappings, resolvedMetrics,
                     resolvedFilters, resolvedTime, spec.orderBy(), effectiveLimit,
-                    publishedLinks, mappingsByObj, datasets, columns, dialect, outputColumns, warnings);
+                    publishedLinks, mappingsByObj, datasets, columns, dialect, outputColumns, warnings,
+                    spec.atModifiers(), byId);
         }
 
         // 4. 强制经 dg-data-spi 只读 SQL 护栏校验（C3）
@@ -301,6 +370,36 @@ public class SemanticQueryCompiler {
                 ? (requiredDatasetIds.isEmpty() ? null : requiredDatasetIds.iterator().next())
                 : factDatasetIds.iterator().next();
 
+        List<Map<String, String>> semanticVersions = new ArrayList<>();
+        List<Map<String, String>> standardVersions = new ArrayList<>();
+        for (String oid : allReferencedObjectIds) {
+            SemanticObject o = byId.get(oid);
+            if (o == null) {
+                continue;
+            }
+            semanticVersions.add(Map.of(
+                    "code", o.getCode() == null ? "" : o.getCode(),
+                    "versionNo", String.valueOf(o.getVersionNo() == null ? 1 : o.getVersionNo()),
+                    "contentDigest", o.getContentDigest() == null ? "" : o.getContentDigest()));
+            if (o.getStandardRef() != null && !o.getStandardRef().isBlank()) {
+                standardVersions.add(Map.of("standardId", o.getStandardRef(), "version", "bound"));
+            }
+        }
+        List<Map<String, String>> datasourceSnapshots = requiredDatasetIds.stream()
+                .map(id -> Map.of("datasetId", id, "snapshotRef", "live"))
+                .toList();
+        ReproducibilityFingerprint repro = new ReproducibilityFingerprint(
+                1,
+                datasourceSnapshots,
+                semanticVersions,
+                standardVersions,
+                List.of(Map.of("operatorId", "SemanticQueryCompiler", "version", "1", "digest", fingerprint)),
+                fingerprint,
+                gatePass.gateDigest(),
+                List.of(),
+                Map.of("truncated", gatePass.truncated(), "maxRows", effectiveLimit),
+                java.time.Instant.now().toString());
+
         return new CompiledSemanticQuery(
                 safeSql,
                 dialect,
@@ -311,7 +410,8 @@ public class SemanticQueryCompiler {
                 fingerprint,
                 appliedExclusions,
                 useFanoutCte,
-                warnings);
+                warnings,
+                repro);
     }
 
     // ── Single-Fact / Star-Join Compilation ──────────────────────────────
@@ -331,7 +431,9 @@ public class SemanticQueryCompiler {
             Map<String, CatalogColumn> columns,
             String dialect,
             List<CompiledColumn> outputColumns,
-            List<String> warnings) {
+            List<String> warnings,
+            List<AtModifier> atModifiers,
+            Map<String, SemanticObject> byId) {
 
         Map<String, String> tableAliases = new LinkedHashMap<>();
         tableAliases.put(baseDatasetId, "t0");
@@ -357,7 +459,8 @@ public class SemanticQueryCompiler {
         for (String targetDs : extraDatasets) {
             String targetAlias = "t" + (aliasIdx++);
             tableAliases.put(targetDs, targetAlias);
-            JoinEdge join = findJoinBetweenDatasets(baseDatasetId, targetDs, links, mappingsByObj);
+            JoinEdge join = findJoinBetweenDatasets(
+                    baseDatasetId, targetDs, links, mappingsByObj, atModifiers, byId);
             if (join == null) {
                 throw new BizException(ErrorCode.MTD_SEMANTIC_COMPILE_FAILED,
                         "物理数据集 " + baseDatasetId + " 与 " + targetDs + " 之间缺少已发布的 STRUCTURAL 关联路径（md_semantic_link）");
@@ -381,7 +484,8 @@ public class SemanticQueryCompiler {
         }
 
         for (ResolvedMetric rm : resolvedMetrics) {
-            String metricExpr = renderMetricExpr(rm, tableAliases, columns, dialect);
+            String metricExpr = renderSemiAdditiveMetricExpr(
+                    rm, tableAliases, columns, dialect, timeFilter, warnings);
             String colAlias = sanitizeAlias(rm.metric().getCode());
             selectExprs.add(metricExpr + " AS " + colAlias);
             aliasByCode.put(rm.metric().getCode().toLowerCase(Locale.ROOT), colAlias);
@@ -404,6 +508,49 @@ public class SemanticQueryCompiler {
         }
         appendOrderAndLimit(sql, orderBy, aliasByCode, limit);
         return sql.toString();
+    }
+
+    /**
+     * 半加性：有 window_groupings + timeRange 时，用「窗口末态」聚合（PG: (ARRAY_AGG ORDER BY time DESC)[1]；
+     * 其它方言回退普通聚合并告警）。
+     */
+    private String renderSemiAdditiveMetricExpr(ResolvedMetric rm,
+                                                Map<String, String> tableAliases,
+                                                Map<String, CatalogColumn> columns,
+                                                String dialect,
+                                                ResolvedTimeFilter timeFilter,
+                                                List<String> warnings) {
+        Map<String, Object> spec = readJsonMap(rm.metric().getSpecJson());
+        Object add = spec.get("additivity");
+        List<String> windows = List.of();
+        if (add instanceof Map<?, ?> a && "semi_additive".equalsIgnoreCase(stringOrNull(a.get("kind")))) {
+            windows = toStringList(a.get("window_groupings"));
+        }
+        if (windows.isEmpty()) {
+            return renderMetricExpr(rm, tableAliases, columns, dialect);
+        }
+        if (timeFilter == null || rm.derivedRatio() || rm.baseParts().size() != 1) {
+            warnings.add("SEMI_ADDITIVE_FALLBACK:" + rm.metric().getCode()
+                    + " 需要单一基础度量 + timeRange 才能应用 window_groupings 末态取值");
+            return renderMetricExpr(rm, tableAliases, columns, dialect);
+        }
+        BaseMetricPart p = rm.baseParts().get(0);
+        boolean nullAsZero = readNullAsZero(rm.metric().getSpecJson());
+        String col = columnExpr(tableAliases.get(p.mapping().getCatalogDatasetId()), p.mapping(), columns, nullAsZero);
+        String timeExpr = columnExpr(tableAliases.get(timeFilter.mapping().getCatalogDatasetId()),
+                timeFilter.mapping(), columns);
+        // 末态快照：按当前 GROUP BY 粒度取 time 最新非空值（半加性余额类）
+        return switch (dialect) {
+            case "POSTGRESQL" -> "(ARRAY_AGG(" + col + " ORDER BY " + timeExpr
+                    + " DESC) FILTER (WHERE " + col + " IS NOT NULL))[1]";
+            case "STARROCKS" -> "max_by(" + col + ", " + timeExpr + ")";
+            case "MYSQL" -> "SUBSTRING_INDEX(GROUP_CONCAT(" + col
+                    + " ORDER BY " + timeExpr + " DESC SEPARATOR 0x1F), 0x1F, 1)";
+            default -> {
+                // DuckDB 等：max_by(value, time)
+                yield "max_by(" + col + ", " + timeExpr + ")";
+            }
+        };
     }
 
     // ── Multi-Fact Fan-out / Chasm Trap Protection CTE Compilation ───────
@@ -526,12 +673,14 @@ public class SemanticQueryCompiler {
             if (dimObjs.isEmpty()) {
                 sql.append(" CROSS JOIN ").append(nextCte);
             } else {
+                // W3/SMQ：多事实缝合用 FULL OUTER + NULL 安全等值（防 NULL 维裂变）
                 List<String> onParts = dimObjs.stream()
                         .map(d -> {
                             String a = sanitizeAlias(d.getCode());
-                            return firstCte + "." + a + " = " + nextCte + "." + a;
+                            return nullSafeEq(dialect, firstCte + "." + a, nextCte + "." + a);
                         }).toList();
-                sql.append(" LEFT JOIN ").append(nextCte).append(" ON ").append(String.join(" AND ", onParts));
+                sql.append(" FULL OUTER JOIN ").append(nextCte)
+                        .append(" ON ").append(String.join(" AND ", onParts));
             }
         }
         appendOrderAndLimit(sql, orderBy, aliasByCode, limit);
@@ -539,6 +688,120 @@ public class SemanticQueryCompiler {
     }
 
     // ── Metric & Join Helpers ────────────────────────────────────────────
+
+    private void rejectForbiddenAtModifiers(List<AtModifier> modifiers) {
+        if (modifiers == null || modifiers.isEmpty()) {
+            return;
+        }
+        for (AtModifier m : modifiers) {
+            if (m == null || m.op() == null) {
+                continue;
+            }
+            String op = m.op().trim().toUpperCase(Locale.ROOT);
+            if (op.contains("DISABLE") || op.contains("BYPASS") || op.equals("IGNORE_EXCLUDES")
+                    || op.equals("IGNORE_RLS") || op.equals("SKIP_SECURITY")) {
+                throw new CompileRejectException(CompileReject.of(
+                        SemanticCompileErrorCode.SECURITY_FIELD_FORBIDDEN,
+                        "at_modifiers 不可关闭 EXCLUDES/RLS/安全谓词: " + m.op(),
+                        "$.at_modifiers",
+                        List.of("USING", "SET_GRAIN"),
+                        "删除该 modifier，仅使用 USING / SET_GRAIN"));
+            }
+            if (!Set.of("USING", "SET_GRAIN").contains(op)) {
+                throw new CompileRejectException(CompileReject.of(
+                        SemanticCompileErrorCode.SECURITY_FIELD_FORBIDDEN,
+                        "不支持的 at_modifiers.op: " + m.op(),
+                        "$.at_modifiers",
+                        List.of("USING", "SET_GRAIN"),
+                        "将 op 改为 USING 或 SET_GRAIN"));
+            }
+        }
+    }
+
+    private void warnSemiAdditiveAndLod(SemanticObject metric, List<String> warnings) {
+        Map<String, Object> spec = readJsonMap(metric.getSpecJson());
+        Object add = spec.get("additivity");
+        if (add instanceof Map<?, ?> a) {
+            String kind = stringOrNull(a.get("kind"));
+            if (kind != null && "semi_additive".equalsIgnoreCase(kind)) {
+                List<String> windows = toStringList(a.get("window_groupings"));
+                if (windows.isEmpty()) {
+                    warnings.add("SEMI_ADDITIVE_MISSING_WINDOW:" + metric.getCode()
+                            + " 缺少 window_groupings，聚合可能沿非加性维错误累加");
+                } else {
+                    warnings.add("SEMI_ADDITIVE_WINDOW_APPLIED:" + metric.getCode()
+                            + " window_groupings=" + windows
+                            + " → 编译为 PARTITION 末态取值（ROW_NUMBER/DISTINCT ON）");
+                }
+            }
+        }
+        Object lod = spec.get("lod");
+        if (lod instanceof Map<?, ?> l) {
+            String type = stringOrNull(l.get("type"));
+            if (type != null && !"NONE".equalsIgnoreCase(type) && !type.isBlank()) {
+                warnings.add("LOD_GRAIN_REWRITE:" + metric.getCode()
+                        + " lod.type=" + type + " dimensions=" + toStringList(l.get("dimensions")));
+            }
+        }
+    }
+
+    /** LOD FIXED/INCLUDE/EXCLUDE：改写参与 GROUP BY / SELECT 的维度集合。 */
+    private List<SemanticObject> applyLodGrain(
+            List<SemanticObject> dimObjs,
+            List<ResolvedMetric> resolvedMetrics,
+            Map<String, SemanticObject> byCode,
+            List<String> warnings) {
+        List<SemanticObject> working = new ArrayList<>(dimObjs);
+        for (ResolvedMetric rm : resolvedMetrics) {
+            Map<String, Object> spec = readJsonMap(rm.metric().getSpecJson());
+            Object lod = spec.get("lod");
+            if (!(lod instanceof Map<?, ?> l)) {
+                continue;
+            }
+            String type = stringOrNull(l.get("type"));
+            if (type == null || "NONE".equalsIgnoreCase(type) || type.isBlank()) {
+                continue;
+            }
+            List<String> lodDims = toStringList(l.get("dimensions"));
+            String upper = type.toUpperCase(Locale.ROOT);
+            if ("FIXED".equals(upper)) {
+                working = new ArrayList<>();
+                for (String code : lodDims) {
+                    SemanticObject o = byCode.get(code.toLowerCase(Locale.ROOT));
+                    if (o != null) {
+                        working.add(o);
+                    } else {
+                        warnings.add("LOD_FIXED_UNRESOLVED:" + rm.metric().getCode() + "->" + code);
+                    }
+                }
+            } else if ("INCLUDE".equals(upper)) {
+                Set<String> present = working.stream()
+                        .map(o -> o.getCode() == null ? "" : o.getCode().toLowerCase(Locale.ROOT))
+                        .collect(Collectors.toSet());
+                for (String code : lodDims) {
+                    String key = code.toLowerCase(Locale.ROOT);
+                    if (present.contains(key)) {
+                        continue;
+                    }
+                    SemanticObject o = byCode.get(key);
+                    if (o != null) {
+                        working.add(o);
+                        present.add(key);
+                    } else {
+                        warnings.add("LOD_INCLUDE_UNRESOLVED:" + rm.metric().getCode() + "->" + code);
+                    }
+                }
+            } else if ("EXCLUDE".equals(upper)) {
+                Set<String> drop = lodDims.stream()
+                        .map(c -> c.toLowerCase(Locale.ROOT))
+                        .collect(Collectors.toSet());
+                working = working.stream()
+                        .filter(o -> o.getCode() == null || !drop.contains(o.getCode().toLowerCase(Locale.ROOT)))
+                        .collect(Collectors.toCollection(ArrayList::new));
+            }
+        }
+        return working;
+    }
 
     private record BaseMetricPart(String key, SemanticObject object, String aggregation, SemanticMapping mapping) {
     }
@@ -684,8 +947,12 @@ public class SemanticQueryCompiler {
 
     private JoinEdge findJoinBetweenDatasets(String leftDsId, String rightDsId,
                                              List<SemanticLink> links,
-                                             Map<String, List<SemanticMapping>> mappingsByObj) {
-        // 先检查显式 STRUCTURAL 边的 joinSpecJson
+                                             Map<String, List<SemanticMapping>> mappingsByObj,
+                                             List<AtModifier> atModifiers,
+                                             Map<String, SemanticObject> byId) {
+        record Candidate(String bridgeCode, JoinEdge edge) {
+        }
+        List<Candidate> candidates = new ArrayList<>();
         for (SemanticLink link : links) {
             if (!"STRUCTURAL".equals(link.getEdgeCategory()) || link.getJoinSpecJson() == null) {
                 continue;
@@ -701,42 +968,105 @@ public class SemanticQueryCompiler {
                 continue;
             }
             List<Map<String, Object>> specs = readJsonList(link.getJoinSpecJson());
-            if (!specs.isEmpty()) {
-                Map<String, Object> first = specs.get(0);
-                String lc = stringOrNull(first.get("leftColumn"));
-                String rc = stringOrNull(first.get("rightColumn"));
-                String jt = String.valueOf(first.getOrDefault("joinType", "LEFT")).toUpperCase(Locale.ROOT);
-                if (!Set.of("LEFT", "INNER", "RIGHT").contains(jt)) {
-                    jt = "LEFT";
-                }
-                if (lc != null && rc != null) {
-                    return direct ? new JoinEdge(lc, rc, jt) : new JoinEdge(rc, lc, jt);
-                }
+            if (specs.isEmpty()) {
+                continue;
+            }
+            Map<String, Object> first = specs.get(0);
+            String lc = stringOrNull(first.get("leftColumn"));
+            String rc = stringOrNull(first.get("rightColumn"));
+            String jt = String.valueOf(first.getOrDefault("joinType", "LEFT")).toUpperCase(Locale.ROOT);
+            if (!Set.of("LEFT", "INNER", "RIGHT").contains(jt)) {
+                jt = "LEFT";
+            }
+            if (lc == null || rc == null) {
+                continue;
+            }
+            String fromCode = byId == null || byId.get(link.getFromObjectId()) == null
+                    ? link.getFromObjectId()
+                    : byId.get(link.getFromObjectId()).getCode();
+            String toCode = byId == null || byId.get(link.getToObjectId()) == null
+                    ? link.getToObjectId()
+                    : byId.get(link.getToObjectId()).getCode();
+            String bridge = (fromCode == null ? "" : fromCode) + "|" + (toCode == null ? "" : toCode);
+            JoinEdge edge = direct ? new JoinEdge(lc, rc, jt) : new JoinEdge(rc, lc, jt);
+            candidates.add(new Candidate(bridge, edge));
+            // 也登记端点 code 供 USING 匹配
+            if (fromCode != null) {
+                candidates.add(new Candidate(fromCode, edge));
+            }
+            if (toCode != null && !toCode.equals(fromCode)) {
+                candidates.add(new Candidate(toCode, edge));
             }
         }
-        return null;
+        if (candidates.isEmpty()) {
+            return null;
+        }
+        // 按边去重（同一 JoinEdge 可能因 bridge 登记重复）
+        List<JoinEdge> uniqueEdges = candidates.stream()
+                .map(Candidate::edge)
+                .distinct()
+                .toList();
+        if (uniqueEdges.size() == 1) {
+            return uniqueEdges.get(0);
+        }
+
+        List<String> usingRels = (atModifiers == null ? List.<AtModifier>of() : atModifiers).stream()
+                .filter(m -> m != null && m.op() != null && "USING".equalsIgnoreCase(m.op().trim()))
+                .map(AtModifier::rel)
+                .filter(r -> r != null && !r.isBlank())
+                .map(r -> r.trim().toLowerCase(Locale.ROOT))
+                .toList();
+        if (!usingRels.isEmpty()) {
+            List<JoinEdge> matched = candidates.stream()
+                    .filter(c -> c.bridgeCode() != null
+                            && usingRels.contains(c.bridgeCode().toLowerCase(Locale.ROOT)))
+                    .map(Candidate::edge)
+                    .distinct()
+                    .toList();
+            if (matched.size() == 1) {
+                return matched.get(0);
+            }
+        }
+
+        List<String> allowed = candidates.stream()
+                .map(Candidate::bridgeCode)
+                .filter(Objects::nonNull)
+                .filter(c -> !c.contains("|"))
+                .distinct()
+                .sorted()
+                .toList();
+        throw new CompileRejectException(CompileReject.of(
+                SemanticCompileErrorCode.MULTI_FACT_AMBIGUOUS_PATH,
+                "数据集 " + leftDsId + " 与 " + rightDsId + " 之间存在多条 STRUCTURAL 路径，请用 at_modifiers.USING 指定桥接实体/维",
+                "$.at_modifiers",
+                allowed,
+                "在 at_modifiers 中加入 {\"op\":\"USING\",\"rel\":\"<候选 code>\"} 后重试 compile_and_validate",
+                Map.of("leftDatasetId", leftDsId, "rightDatasetId", rightDsId, "pathCount", uniqueEdges.size())));
     }
 
     private String renderMetricExpr(ResolvedMetric rm, Map<String, String> tableAliases,
                                     Map<String, CatalogColumn> columns, String dialect) {
+        boolean nullAsZero = readNullAsZero(rm.metric().getSpecJson());
         if (rm.derivedRatio()) {
             BaseMetricPart num = rm.baseParts().get(0);
             BaseMetricPart den = rm.baseParts().get(1);
             String numAgg = renderAggregation(num.aggregation(),
-                    columnExpr(tableAliases.get(num.mapping().getCatalogDatasetId()), num.mapping(), columns));
+                    columnExpr(tableAliases.get(num.mapping().getCatalogDatasetId()), num.mapping(), columns, nullAsZero));
             String denAgg = renderAggregation(den.aggregation(),
-                    columnExpr(tableAliases.get(den.mapping().getCatalogDatasetId()), den.mapping(), columns));
+                    columnExpr(tableAliases.get(den.mapping().getCatalogDatasetId()), den.mapping(), columns, nullAsZero));
             return safeRatioExpr(numAgg, denAgg, dialect);
         }
         BaseMetricPart p = rm.baseParts().get(0);
         return renderAggregation(p.aggregation(),
-                columnExpr(tableAliases.get(p.mapping().getCatalogDatasetId()), p.mapping(), columns));
+                columnExpr(tableAliases.get(p.mapping().getCatalogDatasetId()), p.mapping(), columns, nullAsZero));
     }
 
     private String safeRatioExpr(String numExpr, String denExpr, String dialect) {
+        // 除零与空分母均返回 NULL，绝不 COALESCE 为 0（W3）
         String castType = "POSTGRESQL".equals(dialect) ? "DOUBLE PRECISION" : "DOUBLE";
-        return "CASE WHEN (" + denExpr + ") = 0 THEN NULL ELSE CAST(" + numExpr + " AS " + castType
-                + ") / NULLIF(" + denExpr + ", 0) END";
+        String ratio = "CAST(" + numExpr + " AS " + castType + ") / NULLIF(CAST(" + denExpr + " AS " + castType + "), 0)";
+        nullAsZeroGuard.assertAllowed(ratio, false);
+        return ratio;
     }
 
     private String renderAggregation(String agg, String colExpr) {
@@ -825,8 +1155,15 @@ public class SemanticQueryCompiler {
     }
 
     private String columnExpr(String tableAlias, SemanticMapping mapping, Map<String, CatalogColumn> columns) {
+        return columnExpr(tableAlias, mapping, columns, false);
+    }
+
+    private String columnExpr(String tableAlias, SemanticMapping mapping, Map<String, CatalogColumn> columns,
+                              boolean nullAsZeroAllowed) {
         if (mapping.getExpressionSql() != null && !mapping.getExpressionSql().isBlank()) {
-            return mapping.getExpressionSql().trim();
+            String expr = mapping.getExpressionSql().trim();
+            nullAsZeroGuard.assertAllowed(expr, nullAsZeroAllowed);
+            return expr;
         }
         CatalogColumn col = mapping.getCatalogColumnId() == null ? null : columns.get(mapping.getCatalogColumnId());
         if (col == null || col.getName() == null || col.getName().isBlank()) {
@@ -834,6 +1171,11 @@ public class SemanticQueryCompiler {
                     "映射 " + mapping.getId() + " 缺少物理列名或表达式");
         }
         return tableAlias + "." + safeIdent(col.getName());
+    }
+
+    private boolean readNullAsZero(String specJson) {
+        Object v = readJsonMap(specJson).get("null_as_zero");
+        return Boolean.TRUE.equals(v) || "true".equalsIgnoreCase(String.valueOf(v));
     }
 
     private String safeIdent(String ident) {
@@ -846,6 +1188,14 @@ public class SemanticQueryCompiler {
 
     private String sanitizeAlias(String code) {
         return code.replaceAll("[^A-Za-z0-9_]", "_").toLowerCase(Locale.ROOT);
+    }
+
+    /** NULL 安全等值：PG/StarRocks 用 IS NOT DISTINCT FROM；MySQL 映射 &lt;=&gt; */
+    private String nullSafeEq(String dialect, String left, String right) {
+        if ("MYSQL".equalsIgnoreCase(dialect)) {
+            return left + " <=> " + right;
+        }
+        return left + " IS NOT DISTINCT FROM " + right;
     }
 
     private String normalizeOp(String op) {

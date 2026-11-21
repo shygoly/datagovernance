@@ -3,6 +3,7 @@
 - **Change ID**: `metric-6d-ontology-verification`
 - **Status**: Draft（已同步核心元语至 `ARCHITECTURE.md`、`docs/space-contracts/metadata.yaml`、`contracts/mcp/datagov-mcp.json`）
 - **Depends On**: `semantic-ontology-kernel`、`multisource-semantic-federation`
+- **Coordinates With**: `analysis-hardening-clinical-foundation`（**W2**：交付顺序必须 **G1–G5 / 删除保护 / 变更传播先于六维运算接通编译器**；未 `verified` 对象不得进入生产问数目录）
 - **Constitution Alignment**: 严格遵循 `CONSTITUTION.md`（C1–C10）、`SPACE-MODEL.md`、`GOVERNANCE-MODEL.md`
 
 ---

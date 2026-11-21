@@ -154,4 +154,24 @@ public class PostgreSqlConnector extends AbstractJdbcConnector {
             return Set.of();
         }
     }
+    /** 先查普通视图 {@code pg_views}，再查物化视图 {@code pg_matviews}。 */
+    @Override
+    protected String readViewDefinition(Connection connection, String catalog, String schema,
+                                        String viewName, com.datagov.data.spi.catalog.CatalogModel.TableKind kind)
+            throws SQLException {
+        for (String sql : new String[]{
+                "SELECT definition FROM pg_views WHERE schemaname = COALESCE(?, current_schema()) AND viewname = ?",
+                "SELECT definition FROM pg_matviews WHERE schemaname = COALESCE(?, current_schema()) AND matviewname = ?"}) {
+            try (PreparedStatement ps = connection.prepareStatement(sql)) {
+                ps.setString(1, schema);
+                ps.setString(2, viewName);
+                try (ResultSet rs = ps.executeQuery()) {
+                    if (rs.next() && rs.getString(1) != null) {
+                        return rs.getString(1);
+                    }
+                }
+            }
+        }
+        return null;
+    }
 }

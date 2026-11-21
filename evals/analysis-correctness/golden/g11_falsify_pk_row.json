@@ -1,0 +1,13 @@
+{
+  "id": "g11_falsify_pk_row",
+  "kind": "sql_row",
+  "dialect": "H2",
+  "setup_sql": [
+    "CREATE TABLE parent (id BIGINT PRIMARY KEY, name VARCHAR(32))",
+    "CREATE TABLE child (id BIGINT PRIMARY KEY, parent_id BIGINT, amount DECIMAL)",
+    "INSERT INTO parent VALUES (1, 'a'), (2, 'b')",
+    "INSERT INTO child VALUES (10, 1, 1.5), (11, 1, 2.5), (12, 2, 3.0), (13, NULL, 0.5)"
+  ],
+  "sql": "SELECT COUNT(*) = COUNT(DISTINCT id) AS pk_is_unique FROM parent",
+  "expect_cell": "TRUE"
+}

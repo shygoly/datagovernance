@@ -195,7 +195,7 @@ export interface AuditQuery {
 
 // ── P1 治理收件箱 ────────────────────────────────────────────────────
 
-export type InboxSourceType = 'EXECUTION' | 'ALERT' | 'SENSITIVITY'
+export type InboxSourceType = 'EXECUTION' | 'ALERT' | 'SENSITIVITY' | 'AUTONOMY' | 'AUTONOMY_APPROVAL'
 export type InboxItemState = 'OPEN' | 'DISMISSED'
 
 export interface InboxItem {

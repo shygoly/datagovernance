@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { agentApi } from '@/api/agent'
+import { autonomyApi } from '@/api/autonomy'
 import type { AgentActionProposal } from '@/types/agent'
 import { formatDateTime } from '@/utils/format'
 
@@ -15,6 +16,8 @@ defineOptions({ name: 'AgentConsentDialog' })
 
 const props = defineProps<{
   proposal: AgentActionProposal | null
+  /** autonomy：L2 自治动作审批，走 /autonomy/approvals 端点；默认走 Agent 提案端点。 */
+  mode?: 'agent' | 'autonomy'
 }>()
 
 const emit = defineEmits<{
@@ -56,13 +59,16 @@ async function handleConfirm() {
   submitting.value = true
   errorText.value = ''
   try {
-    const result = await agentApi.confirmProposal(props.proposal.id, {
-      payloadDigest: props.proposal.payloadDigest,
-      note: note.value.trim() || undefined,
-    })
+    const result = props.mode === 'autonomy'
+      ? await autonomyApi.confirmApproval(props.proposal.id, props.proposal.payloadDigest,
+          note.value.trim() || undefined)
+      : await agentApi.confirmProposal(props.proposal.id, {
+          payloadDigest: props.proposal.payloadDigest,
+          note: note.value.trim() || undefined,
+        })
     ElMessage.success(`已确认并执行：${result.title}`)
     note.value = ''
-    emit('resolved', result)
+    emit('resolved', result as AgentActionProposal)
   } catch (err) {
     errorText.value = err instanceof Error ? err.message : '确认执行失败，请重试'
   } finally {
@@ -77,12 +83,15 @@ async function handleReject() {
   submitting.value = true
   errorText.value = ''
   try {
-    const result = await agentApi.rejectProposal(props.proposal.id, {
-      note: note.value.trim() || '用户在宿主确认界面拒绝',
-    })
+    const result = props.mode === 'autonomy'
+      ? await autonomyApi.rejectApproval(props.proposal.id,
+          note.value.trim() || '用户在宿主确认界面拒绝')
+      : await agentApi.rejectProposal(props.proposal.id, {
+          note: note.value.trim() || '用户在宿主确认界面拒绝',
+        })
     ElMessage.info(`已拒绝提案：${result.title}`)
     note.value = ''
-    emit('resolved', result)
+    emit('resolved', result as AgentActionProposal)
   } catch (err) {
     errorText.value = err instanceof Error ? err.message : '拒绝提案失败'
   } finally {

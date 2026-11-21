@@ -1,0 +1,13 @@
+{
+  "id": "g08_standard_missing",
+  "kind": "gate",
+  "dialect": "POSTGRESQL",
+  "metric_code": "metric.order.gmv",
+  "metric_standard_ref": "",
+  "metric_spec": {},
+  "dimensions": ["attr.region"],
+  "allowed_datasets": ["ds1"],
+  "required_datasets": ["ds1"],
+  "max_rows": 200,
+  "expect_error": "STANDARD_MISSING"
+}

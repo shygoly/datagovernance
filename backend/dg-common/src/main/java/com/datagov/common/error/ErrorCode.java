@@ -55,6 +55,9 @@ public enum ErrorCode {
     RTM_EXECUTION_NOT_CANCELABLE("RTM_EXECUTION_NOT_CANCELABLE", 409, "该执行已结束,无法取消"),
     RTM_EXECUTION_TIMEOUT("RTM_EXECUTION_TIMEOUT", 504, "执行超时"),
     RTM_EXECUTOR_UNAVAILABLE("RTM_EXECUTOR_UNAVAILABLE", 503, "执行器不可用"),
+    RTM_FLOW_NOT_FOUND("RTM_FLOW_NOT_FOUND", 404, "自治流程实例不存在"),
+    RTM_FLOW_STATE("RTM_FLOW_STATE", 409, "自治流程实例状态不允许该操作"),
+    RTM_FLOW_SUPPRESSED("RTM_FLOW_SUPPRESSED", 409, "实体存在在途流程或处于冷却期"),
 
     // ── Control / 编译与调度 ────────────────────────────────────────────
     CTL_JOB_NOT_FOUND("CTL_JOB_NOT_FOUND", 404, "任务定义不存在"),
@@ -67,6 +70,11 @@ public enum ErrorCode {
     CTL_JOB_NOT_SCHEDULABLE("CTL_JOB_NOT_SCHEDULABLE", 409, "该任务类型不支持周期调度"),
     CTL_PLAN_STALE("CTL_PLAN_STALE", 409, "物理计划已过期,请重新编译"),
     CTL_DAG_INVALID("CTL_DAG_INVALID", 400, "工作流 DAG 非法"),
+    CTL_FLOW_NOT_FOUND("CTL_FLOW_NOT_FOUND", 404, "自治流程不存在"),
+    CTL_FLOW_COMPILE_FAILED("CTL_FLOW_COMPILE_FAILED", 400, "FlowSpec IR 编译失败"),
+    CTL_FLOW_STATE("CTL_FLOW_STATE", 409, "自治流程状态不允许该操作"),
+    CTL_TRIGGER_NOT_FOUND("CTL_TRIGGER_NOT_FOUND", 404, "自治触发器不存在"),
+    CTL_TRIGGER_INVALID("CTL_TRIGGER_INVALID", 400, "自治触发器配置不合法"),
 
     // ── Governance ─────────────────────────────────────────────
     // 跨空间读取也用 404:与 SYS_NOT_FOUND 不同,这个码让"报告不存在"与
@@ -81,8 +89,10 @@ public enum ErrorCode {
     GOV_AGENT_QUOTA_EXCEEDED("GOV_AGENT_QUOTA_EXCEEDED", 429, "已超出当前空间智能体配额限制"),
     GOV_PROPOSAL_NOT_FOUND("GOV_PROPOSAL_NOT_FOUND", 404, "操作提案不存在"),
     GOV_PROPOSAL_STATE("GOV_PROPOSAL_STATE", 409, "操作提案当前状态不允许该操作"),
+    GOV_TRACE_NOT_FOUND("GOV_TRACE_NOT_FOUND", 404, "决策轨迹不存在"),
     GOV_FACT_NOT_FOUND("GOV_FACT_NOT_FOUND", 404, "治理事实不存在"),
     GOV_FACT_STATE("GOV_FACT_STATE", 409, "治理事实当前状态不允许该操作"),
+    GOV_MODEL_ROUTING_BLOCKED("GOV_MODEL_ROUTING_BLOCKED", 403, "涉及 L3/L4 敏感上下文，禁止路由至外部公网模型端点"),
 
     // ── Metadata ───────────────────────────────────────────────
     MTD_DATASOURCE_NOT_FOUND("MTD_DATASOURCE_NOT_FOUND", 404, "数据源不存在"),
@@ -122,6 +132,8 @@ public enum ErrorCode {
     MTD_SEMANTIC_INVALID("MTD_SEMANTIC_INVALID", 400, "语义定义或知识图谱配置不合法"),
     MTD_SEMANTIC_STATE("MTD_SEMANTIC_STATE", 409, "语义对象状态不允许该操作"),
     MTD_SEMANTIC_COMPILE_FAILED("MTD_SEMANTIC_COMPILE_FAILED", 400, "语义查询编译失败"),
+    MTD_FILTER_PRESET_NOT_FOUND("MTD_FILTER_PRESET_NOT_FOUND", 404, "过滤器预设不存在"),
+    MTD_FILTER_PRESET_INVALID("MTD_FILTER_PRESET_INVALID", 400, "过滤器预设不合法"),
 
     // ── Data(连接器)────────────────────────────────────────────
     DAT_CONNECTOR_NOT_FOUND("DAT_CONNECTOR_NOT_FOUND", 400, "没有匹配的连接器实现"),

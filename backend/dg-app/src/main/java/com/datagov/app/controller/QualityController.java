@@ -3,6 +3,9 @@ package com.datagov.app.controller;
 import com.datagov.app.web.RequirePermission;
 import com.datagov.common.api.ApiResponse;
 import com.datagov.common.api.PageResult;
+import com.datagov.metadata.service.DatasetQualityProfileService;
+import com.datagov.metadata.service.DatasetQualityProfileService.ProfileRequest;
+import com.datagov.metadata.service.DatasetQualityProfileService.ProfileView;
 import com.datagov.metadata.service.QualityService;
 import com.datagov.metadata.service.QualityService.QualitySummary;
 import com.datagov.metadata.service.QualityService.RuleRequest;
@@ -29,9 +32,12 @@ import java.util.List;
 public class QualityController {
 
     private final QualityService qualityService;
+    private final DatasetQualityProfileService profileService;
 
-    public QualityController(QualityService qualityService) {
+    public QualityController(QualityService qualityService,
+                             DatasetQualityProfileService profileService) {
         this.qualityService = qualityService;
+        this.profileService = profileService;
     }
 
     @GetMapping("/rules")
@@ -87,6 +93,24 @@ public class QualityController {
     @Operation(summary = "资产质量摘要", description = "分数只覆盖已配置且已运行的规则")
     public ApiResponse<QualitySummary> summary(@PathVariable String id) {
         return ApiResponse.ok(qualityService.summary(id));
+    }
+
+    @PostMapping("/datasets/{id}/profile")
+    @RequirePermission("metadata:quality:manage")
+    @Operation(summary = "运行数据集确定性质量剖析（DQ Profile）",
+            description = "计算空值率、单位/枚举异构、码表漂移、时间倒挂与阈值离群，样本不足返回 INCONCLUSIVE")
+    public ApiResponse<ProfileView> profileDataset(@PathVariable String id,
+                                                   @RequestBody(required = false) ProfileRequest request) {
+        return ApiResponse.ok(profileService.profileDataset(id, request));
+    }
+
+    @GetMapping("/datasets/{id}/profiles")
+    @RequirePermission("metadata:quality:read")
+    @Operation(summary = "查询数据集确定性质量剖析历史")
+    public ApiResponse<List<ProfileView>> listProfiles(
+            @PathVariable String id,
+            @RequestParam(defaultValue = "20") int limit) {
+        return ApiResponse.ok(profileService.listProfiles(id, limit));
     }
 
     @GetMapping("/runs")

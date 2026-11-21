@@ -6,7 +6,9 @@ import com.datagov.metadata.entity.CatalogAssetEntities.CatalogDataset;
 import com.datagov.metadata.entity.LineageEntities.LineageEdge;
 import com.datagov.metadata.entity.LineageEntities.LineageJob;
 import com.datagov.metadata.entity.LineageEntities.LineageNode;
+import com.datagov.metadata.entity.SensitivityEntities.ColumnSensitivity;
 import com.datagov.metadata.mapper.CatalogDatasetMapper;
+import com.datagov.metadata.mapper.ColumnSensitivityMapper;
 import com.datagov.metadata.mapper.LineageEdgeMapper;
 import com.datagov.metadata.mapper.LineageJobMapper;
 import com.datagov.metadata.mapper.LineageNodeMapper;
@@ -15,6 +17,9 @@ import com.datagov.metadata.service.LineageService.GraphView;
 import com.datagov.metadata.service.LineageService.JobRequest;
 import com.datagov.metadata.service.LineageService.JobResult;
 import com.datagov.metadata.service.LineageService.NodeRef;
+import com.datagov.metadata.service.lineage.LineageAclEvaluator;
+import com.datagov.metadata.service.lineage.LineageSensitivityPropagator;
+import org.mockito.ArgumentCaptor;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -26,6 +31,7 @@ import java.util.List;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -205,6 +211,296 @@ class LineageServiceTest {
         }
     }
 
+    @Nested
+    @DisplayName("逐跳 ACL(C5)")
+    class HopByHopAcl {
+
+        private LineageService aclService(Set<String> viewableDatasets) {
+            LineageAclEvaluator evaluator = (caller, ids) -> ids.stream()
+                    .filter(viewableDatasets::contains)
+                    .collect(java.util.stream.Collectors.toCollection(java.util.LinkedHashSet::new));
+            return new LineageService(nodeMapper, jobMapper, edgeMapper, datasetMapper, evaluator, null);
+        }
+
+        private LineageNode column(String id, String datasetId, String qualifiedName) {
+            LineageNode node = node(id, "COLUMN", qualifiedName);
+            node.setCatalogDatasetId(datasetId);
+            node.setCatalogColumnId("col_" + id);
+            return node;
+        }
+
+        @Test
+        @DisplayName("上游遇到无权数据集：替换为占位节点、截断分支，且不泄露表名/列名/SQL")
+        void upstreamTruncatesAtRestrictedDataset() {
+            LineageNode target = column("lin_target", "ds_ok", "dwd.orders.amount");
+            LineageNode secret = column("lin_secret", "ds_secret", "secret_hr.salary.amount");
+            LineageEdge edge = edge("line_secret", secret.getId(), target.getId());
+            edge.setTransformExpr("SELECT salary FROM secret_hr.salary");
+            edge.setJobId("linj_secret");
+            edge.setConfidence(0.9);
+
+            // 第 1 次：findNode 起点；第 2 次：第一跳的上游节点
+            when(nodeMapper.selectList(any())).thenReturn(List.of(target), List.of(secret));
+            when(edgeMapper.selectList(any())).thenReturn(List.of(edge));
+
+            GraphView graph = aclService(Set.of("ds_ok")).upstream(target.getId(), 5);
+
+            assertThat(graph.restrictedCount()).isEqualTo(1);
+            assertThat(graph.truncatedByAcl()).isTrue();
+            assertThat(graph.nodes()).hasSize(2);
+            LineageService.NodeView placeholder = graph.nodes().stream()
+                    .filter(n -> "RESTRICTED".equals(n.nodeType())).findFirst().orElseThrow();
+            assertThat(placeholder.id()).startsWith("restricted:").doesNotContain(secret.getId());
+            assertThat(placeholder.qualifiedName()).isEqualTo("[受限资产]");
+            assertThat(placeholder.displayName()).isEqualTo("[受限资产]");
+            assertThat(placeholder.catalogDatasetId()).isNull();
+            assertThat(placeholder.catalogColumnId()).isNull();
+
+            assertThat(graph.edges()).hasSize(1);
+            LineageService.EdgeView restricted = graph.edges().get(0);
+            assertThat(restricted.fromNodeId()).isEqualTo(placeholder.id());
+            assertThat(restricted.toNodeId()).isEqualTo(target.getId());
+            assertThat(restricted.id()).startsWith("restricted-edge:").doesNotContain(edge.getId());
+            assertThat(restricted.transformExpr()).isNull();
+            assertThat(restricted.jobId()).isNull();
+            assertThat(restricted.confidence()).isNull();
+
+            String everything = graph.toString();
+            assertThat(everything).doesNotContain("secret_hr", "salary", "lin_secret", "ds_secret", "linj_secret");
+            // 受限节点不进入下一层 frontier：只查询了一次边（起点那一层）。
+            verify(edgeMapper, times(1)).selectList(any());
+        }
+
+        @Test
+        @DisplayName("有权节点继续逐跳遍历；受限分支只截断自己")
+        void viewableBranchContinuesWhileRestrictedBranchStops() {
+            LineageNode target = column("lin_t", "ds_ok", "dwd.t.c");
+            LineageNode mid = column("lin_mid", "ds_ok2", "ods.mid.c");
+            LineageNode secret = column("lin_s", "ds_secret", "hr.s.c");
+            LineageNode root = column("lin_root", "ds_ok3", "src.root.c");
+            LineageEdge e1 = edge("line_1", mid.getId(), target.getId());
+            LineageEdge e2 = edge("line_2", secret.getId(), target.getId());
+            LineageEdge e3 = edge("line_3", root.getId(), mid.getId());
+            when(nodeMapper.selectList(any())).thenReturn(
+                    List.of(target), List.of(mid, secret), List.of(root));
+            when(edgeMapper.selectList(any())).thenReturn(List.of(e1, e2), List.of(e3), List.of());
+
+            GraphView graph = aclService(Set.of("ds_ok", "ds_ok2", "ds_ok3")).upstream(target.getId(), 5);
+
+            assertThat(graph.restrictedCount()).isEqualTo(1);
+            assertThat(graph.nodes()).extracting(LineageService.NodeView::nodeType)
+                    .containsOnly("COLUMN", "RESTRICTED");
+            assertThat(graph.nodes()).hasSize(4); // target + mid + root + 占位
+            assertThat(graph.edges()).hasSize(3);
+            // 目标层、mid 层、root 层各查一次；受限节点没有自己的一层。
+            verify(edgeMapper, times(3)).selectList(any());
+        }
+
+        @Test
+        @DisplayName("起点本身无权：只返回一个占位，不返回任何边")
+        void restrictedStartReturnsOnlyPlaceholder() {
+            LineageNode start = column("lin_start", "ds_secret", "hr.payroll.salary");
+            when(nodeMapper.selectList(any())).thenReturn(List.of(start));
+
+            GraphView graph = aclService(Set.of()).downstream(start.getId(), 3);
+
+            assertThat(graph.nodes()).hasSize(1);
+            assertThat(graph.nodes().get(0).nodeType()).isEqualTo("RESTRICTED");
+            assertThat(graph.edges()).isEmpty();
+            assertThat(graph.restrictedCount()).isEqualTo(1);
+            assertThat(graph.truncatedByAcl()).isTrue();
+            assertThat(graph.toString()).doesNotContain("payroll", "salary", "ds_secret");
+            verify(edgeMapper, never()).selectList(any());
+        }
+
+        @Test
+        @DisplayName("影响分析走同一 ACL，没有绕过路径")
+        void impactAppliesAcl() {
+            LineageNode start = column("lin_start", "ds_ok", "ods.a.c");
+            LineageNode secret = column("lin_s", "ds_secret", "hr.b.c");
+            when(nodeMapper.selectList(any())).thenReturn(List.of(start), List.of(secret));
+            when(edgeMapper.selectList(any())).thenReturn(List.of(edge("line_1", start.getId(), secret.getId())));
+
+            GraphView graph = aclService(Set.of("ds_ok")).impact(start.getId(), 5);
+
+            assertThat(graph.restrictedCount()).isEqualTo(1);
+            assertThat(graph.toString()).doesNotContain("hr.b.c", "ds_secret");
+        }
+
+        @Test
+        @DisplayName("表级聚合：无权数据集以占位出现，且不披露条数")
+        void datasetGraphReplacesRestrictedDatasetWithPlaceholder() {
+            CatalogDataset source = dataset("catds_src", "ods/sales/orders");
+            LineageNode src = column("lin_src", "catds_src", "ods/sales/orders.id");
+            LineageNode secret = column("lin_dst", "catds_secret", "hr/payroll/salary.amount");
+            when(datasetMapper.selectOne(any())).thenReturn(source);
+            when(nodeMapper.selectList(any())).thenReturn(
+                    List.of(src), List.of(secret), List.of(src, secret));
+            when(edgeMapper.selectList(any())).thenReturn(List.of(edge("line_1", src.getId(), secret.getId())));
+            when(datasetMapper.selectList(any())).thenReturn(List.of(source));
+
+            GraphView graph = aclService(Set.of("catds_src")).datasetGraph("catds_src", "downstream", 2);
+
+            assertThat(graph.restrictedCount()).isEqualTo(1);
+            assertThat(graph.truncatedByAcl()).isTrue();
+            assertThat(graph.nodes()).hasSize(2);
+            assertThat(graph.nodes()).extracting(LineageService.NodeView::nodeType)
+                    .containsExactlyInAnyOrder("DATASET", "RESTRICTED");
+            assertThat(graph.edges()).hasSize(1);
+            assertThat(graph.edges().get(0).transformExpr()).isEqualTo("[受限资产]");
+            assertThat(graph.toString()).doesNotContain("payroll", "salary", "catds_secret", "条列级血缘");
+            verify(edgeMapper, times(1)).selectList(any());
+        }
+
+        @Test
+        @DisplayName("表级聚合：起点数据集无权时只回占位")
+        void datasetGraphRestrictedStart() {
+            CatalogDataset source = dataset("catds_src", "hr/payroll/salary");
+            when(datasetMapper.selectOne(any())).thenReturn(source);
+
+            GraphView graph = aclService(Set.of()).datasetGraph("catds_src", "both", 2);
+
+            assertThat(graph.nodes()).hasSize(1);
+            assertThat(graph.nodes().get(0).nodeType()).isEqualTo("RESTRICTED");
+            assertThat(graph.toString()).doesNotContain("payroll", "salary", "catds_src");
+            verify(nodeMapper, never()).selectList(any());
+        }
+
+        @Test
+        @DisplayName("没有数据集归属的节点不是资产，按可见处理")
+        void nodesWithoutDatasetAreVisible() {
+            LineageNode start = column("lin_start", "ds_ok", "ods.a.c");
+            LineageNode file = node("lin_file", "COLUMN", "s3://bucket/file.csv#name");
+            when(nodeMapper.selectList(any())).thenReturn(List.of(start), List.of(file));
+            when(edgeMapper.selectList(any())).thenReturn(List.of(edge("line_1", file.getId(), start.getId())));
+
+            GraphView graph = aclService(Set.of("ds_ok")).upstream(start.getId(), 1);
+
+            assertThat(graph.restrictedCount()).isZero();
+            assertThat(graph.nodes()).hasSize(2);
+        }
+
+        @Test
+        @DisplayName("直接取受限字段节点只返回占位")
+        void getNodeIsAclProtected() {
+            LineageNode secret = column("lin_s", "ds_secret", "hr.payroll.salary");
+            when(nodeMapper.selectList(any())).thenReturn(List.of(secret));
+
+            LineageService.NodeView view = aclService(Set.of()).getNode("lin_s");
+
+            assertThat(view.nodeType()).isEqualTo("RESTRICTED");
+            assertThat(view.qualifiedName()).isEqualTo("[受限资产]");
+        }
+    }
+
+    @Nested
+    @DisplayName("includePlanned")
+    class IncludePlanned {
+
+        @org.junit.jupiter.api.BeforeAll
+        static void initLambdaCache() {
+            // 让 LambdaQueryWrapper 能在没有 Spring/MyBatis 的单测里解析列名，从而检查真实查询条件。
+            com.baomidou.mybatisplus.core.metadata.TableInfoHelper.initTableInfo(
+                    new org.apache.ibatis.builder.MapperBuilderAssistant(
+                            new com.baomidou.mybatisplus.core.MybatisConfiguration(), ""),
+                    LineageEdge.class);
+        }
+
+        @SuppressWarnings("unchecked")
+        private java.util.Collection<Object> queriedValues() {
+            ArgumentCaptor<com.baomidou.mybatisplus.core.conditions.Wrapper<LineageEdge>> captor =
+                    ArgumentCaptor.forClass(com.baomidou.mybatisplus.core.conditions.Wrapper.class);
+            verify(edgeMapper, org.mockito.Mockito.atLeastOnce()).selectList(captor.capture());
+            com.baomidou.mybatisplus.core.conditions.AbstractWrapper<LineageEdge, ?, ?> wrapper =
+                    (com.baomidou.mybatisplus.core.conditions.AbstractWrapper<LineageEdge, ?, ?>)
+                            captor.getValue();
+            wrapper.getSqlSegment(); // 触发参数物化
+            return wrapper.getParamNameValuePairs().values();
+        }
+
+        @Test
+        @DisplayName("默认只查 ACTIVE")
+        void defaultsToActiveOnly() {
+            LineageNode start = node("lin_start", "COLUMN", "ods.a.c");
+            when(nodeMapper.selectList(any())).thenReturn(List.of(start));
+
+            service.downstream(start.getId(), 2);
+
+            assertThat(queriedValues()).contains("ACTIVE").doesNotContain("PLANNED");
+        }
+
+        @Test
+        @DisplayName("includePlanned=true 同时查 PLANNED，列级与表级一致")
+        void includesPlannedWhenRequested() {
+            LineageNode start = node("lin_start", "COLUMN", "ods.a.c");
+            when(nodeMapper.selectList(any())).thenReturn(List.of(start));
+
+            service.upstream(start.getId(), 2, true);
+            assertThat(queriedValues()).contains("ACTIVE", "PLANNED");
+        }
+
+        @Test
+        @DisplayName("表级聚合：只含 PLANNED 的数据集对标 PLANNED 状态")
+        void datasetGraphMarksPlannedOnlyAggregate() {
+            CatalogDataset source = dataset("catds_src", "ods/a");
+            CatalogDataset target = dataset("catds_dst", "dwd/b");
+            LineageNode src = node("lin_src", "COLUMN", "ods/a.id");
+            src.setCatalogDatasetId("catds_src");
+            LineageNode dst = node("lin_dst", "COLUMN", "dwd/b.id");
+            dst.setCatalogDatasetId("catds_dst");
+            LineageEdge planned = edge("line_p", src.getId(), dst.getId());
+            planned.setStatus("PLANNED");
+            when(datasetMapper.selectOne(any())).thenReturn(source);
+            when(nodeMapper.selectList(any())).thenReturn(
+                    List.of(src), List.of(dst), List.of(src, dst));
+            when(edgeMapper.selectList(any())).thenReturn(List.of(planned));
+            when(datasetMapper.selectList(any())).thenReturn(List.of(source, target));
+
+            GraphView graph = service.datasetGraph("catds_src", "downstream", 1, true);
+
+            assertThat(graph.edges()).hasSize(1);
+            assertThat(graph.edges().get(0).status()).isEqualTo("PLANNED");
+        }
+    }
+
+    @Nested
+    @DisplayName("敏感标签传播触发")
+    class SensitivityTrigger {
+
+        @Test
+        @DisplayName("ACTIVE 上报触发传播；PLANNED 不触发")
+        void activeTriggersPlannedDoesNot() {
+            LineageSensitivityPropagator propagator = mock(LineageSensitivityPropagator.class);
+            LineageService withPropagator = new LineageService(nodeMapper, jobMapper, edgeMapper,
+                    datasetMapper, LineageAclEvaluator.allowAll(), propagator);
+
+            withPropagator.recordPlannedJob(jobRequest());
+            verify(propagator, never()).propagateFromEdges(any(), any());
+
+            withPropagator.recordJob(jobRequest());
+            verify(propagator, times(1)).propagateFromEdges(eq(WORKSPACE), any());
+        }
+
+        @Test
+        @DisplayName("INDIRECT 边不触发传播，传播失败不影响血缘写入")
+        void indirectSkippedAndFailuresAreContained() {
+            LineageSensitivityPropagator propagator = mock(LineageSensitivityPropagator.class);
+            LineageService withPropagator = new LineageService(nodeMapper, jobMapper, edgeMapper,
+                    datasetMapper, LineageAclEvaluator.allowAll(), propagator);
+
+            withPropagator.recordJob(new JobRequest("j", "SQL", "s", "h", List.of(new EdgeInput(
+                    new NodeRef("COLUMN", "a.b.c", null, null, "c"),
+                    new NodeRef("COLUMN", "x.y.z", null, null, "z"),
+                    "FILTER", "WHERE c > 1", 1.0, "AUTO", "INDIRECT", false, null))));
+            verify(propagator, never()).propagateFromEdges(any(), any());
+
+            org.mockito.Mockito.doThrow(new IllegalStateException("boom"))
+                    .when(propagator).propagateFromEdges(any(), any());
+            JobResult result = withPropagator.recordJob(jobRequest());
+            assertThat(result.edges()).isEqualTo(1);
+        }
+    }
+
     private static JobRequest jobRequest() {
         return new JobRequest("订单宽表", "SQL", "job_1", "a".repeat(64),
                 List.of(new EdgeInput(
@@ -220,6 +516,37 @@ class LineageServiceTest {
         dataset.setName(qualifiedName.substring(qualifiedName.lastIndexOf('/') + 1));
         dataset.setQualifiedName(qualifiedName);
         return dataset;
+    }
+
+    @Nested
+    @DisplayName("敏感徽标(P2-2)")
+    class SensitivityBadge {
+
+        @Test
+        @DisplayName("图 API 为列节点填充 CONFIRMED 最高敏感等级")
+        void graphAnnotatesMaxConfirmedLevel() {
+            ColumnSensitivityMapper sensitivityMapper = mock(ColumnSensitivityMapper.class);
+            LineageService withBadges = new LineageService(nodeMapper, jobMapper, edgeMapper, datasetMapper,
+                    LineageAclEvaluator.allowAll(), null, null, sensitivityMapper);
+
+            LineageNode target = node("lin_col", "COLUMN", "dwd.orders.amount");
+            target.setCatalogDatasetId("ds_orders");
+            target.setCatalogColumnId("col_amount");
+            when(nodeMapper.selectList(any())).thenReturn(List.of(target));
+
+            ColumnSensitivity confirmed = new ColumnSensitivity();
+            confirmed.setWorkspaceId(WORKSPACE);
+            confirmed.setDatasetId("ds_orders");
+            confirmed.setColumnId("col_amount");
+            confirmed.setStatus("CONFIRMED");
+            confirmed.setLevel("L4");
+            when(sensitivityMapper.selectList(any())).thenReturn(List.of(confirmed));
+
+            GraphView graph = withBadges.upstream(target.getId(), 1);
+
+            assertThat(graph.nodes()).extracting(LineageService.NodeView::sensitivityLevel)
+                    .containsExactly("L4");
+        }
     }
 
     private static LineageEdge edge(String id, String from, String to) {

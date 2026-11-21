@@ -130,6 +130,28 @@ public abstract class AbstractJdbcConnector
         return Set.of();
     }
 
+    /**
+     * 读取视图 / 物化视图的定义 SQL(列级血缘 P1-8)。默认不支持，返回 null。
+     *
+     * <p>各方言的系统表不同，由子类覆盖。<b>取不到不是错误</b>:血缘只是锦上添花，
+     * 没有定义就没有该视图的血缘，而不是让整个结构树打不开。
+     */
+    protected String readViewDefinition(Connection connection, String catalog, String schema,
+                                        String viewName, TableKind kind) throws SQLException {
+        return null;
+    }
+
+    private String safeViewDefinition(Connection connection, String catalog, String schema,
+                                      String viewName, TableKind kind) {
+        try {
+            String definition = readViewDefinition(connection, catalog, schema, viewName, kind);
+            return definition == null || definition.isBlank() ? null : definition;
+        } catch (SQLException | RuntimeException ex) {
+            log.debug("读取视图定义失败,跳过 view={} kind={}", viewName, kind, ex);
+            return null;
+        }
+    }
+
     // ── SPI 实现 ────────────────────────────────────────────────────────
 
     @Override
@@ -223,13 +245,18 @@ public abstract class AbstractJdbcConnector
                     if (hidden.contains(name)) {
                         continue;
                     }
+                    TableKind kind = toTableKind(rs.getString("TABLE_TYPE"));
+                    String viewDefinition = (kind == TableKind.VIEW || kind == TableKind.MATERIALIZED_VIEW)
+                            ? safeViewDefinition(connection, catalog, schema, name, kind)
+                            : null;
                     tables.add(new TableInfo(
                             name,
-                            toTableKind(rs.getString("TABLE_TYPE")),
+                            kind,
                             rs.getString("REMARKS"),
                             null,   // 行数与体积需要引擎特有的统计表,P1 不采集
                             null,
-                            null));
+                            null,
+                            viewDefinition));
                 }
             }
             return tables;

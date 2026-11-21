@@ -118,38 +118,36 @@ set -a; . ./.env.local; set +a
 > (典型症状:数据源“测试连接”报“主密钥不匹配或密文已被篡改”)。
 > 密文带 `v1:` 版本前缀,将来换算法(如信创场景改用 SM4-GCM)可平滑共存。
 
-### 3. 启动后端
+### 3. 一键打印 / 分进程启动（推荐）
 
 ```bash
-mvn -pl backend/dg-app -am spring-boot:run
+./scripts/dev-start.sh all            # 打印后端/前端/Agent 三条命令
+./scripts/dev-start.sh backend        # Java dg-app :8080（读 .env.local）
+./scripts/dev-start.sh frontend       # Vite :5173，代理 /api → 8080
+./scripts/dev-start.sh agent          # Pi sidecar :8090（问数可选）
+# ./scripts/dev-start.sh all --bg     # 后台起三个进程，日志在 logs/
+```
+
+等价手工命令：
+
+```bash
+# 后端（须先 set -a; . ./.env.local; set +a，且 JAVA_HOME=JDK 21）
+# 勿在根 POM 直接 spring-boot:run（会落到 dg-parent 报 mainClass）
+mvn -pl backend/dg-app -am -DskipTests install
+mvn -f backend/dg-app/pom.xml spring-boot:run
+
+# 前端
+cd frontend && pnpm install && pnpm run dev
+
+# Agent（与后端共用 DG_AGENT_TOKEN；需 DEEPSEEK_API_KEY）
+cd agent-service && npm install
+DG_BACKEND_URL=http://127.0.0.1:8080 DG_AGENT_TOKEN=dev-agent-token npm start
 ```
 
 Flyway 会自动建表并灌入权限与内置角色种子。首次启动还会创建默认空间与管理员账号。
 
 - API 文档:http://localhost:8080/swagger-ui.html
-
-### 4. 启动前端
-
-```bash
-cd frontend && pnpm install && pnpm run dev
-```
-
-### 5. 启动智能问数 Agent（可选，`/insight/ask` 需要）
-
-```bash
-cd agent-service && npm install
-DG_BACKEND_URL=http://127.0.0.1:8080 \
-DG_AGENT_TOKEN=dev-agent-token \
-DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
-DEEPSEEK_MODEL=deepseek-flash \
-npm start
-```
-
-后端启动时也要带同一个 `DG_AGENT_TOKEN`，否则内部工具端点返回未配置：
-
-```bash
-DG_AGENT_TOKEN=dev-agent-token mvn -pl backend/dg-app -am spring-boot:run
-```
+- UI:http://localhost:5173
 
 前端仍只访问 `/api/v1/insight/agent/*`；Node 服务只监听 `127.0.0.1:8090`，
 由 Java 代理做鉴权和会话归属校验。详细边界见 `agent-service/README.md`。

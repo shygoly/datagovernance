@@ -41,7 +41,7 @@ service.interceptors.response.use(
     // 只有能识别出 success 字段时才按信封语义处理,否则原样透传。
     if (body && typeof body === 'object' && typeof body.success === 'boolean') {
       if (!body.success) {
-        ElMessage.error(body.message || '请求失败')
+        ElMessage.error(formatApiError(body))
         return Promise.reject(body)
       }
       return body.data
@@ -52,7 +52,7 @@ service.interceptors.response.use(
     if (axios.isAxiosError(error)) {
       if (error.response) {
         const { status, data } = error.response as { status: number; data?: ApiResponse<unknown> }
-        const message = data?.message || `请求失败(HTTP ${status})`
+        const message = data ? formatApiError(data) : `请求失败(HTTP ${status})`
         if (status === 401) {
           ElMessage.error(message || '登录已过期,请重新登录')
           const authStore = useAuthStore()
@@ -73,6 +73,16 @@ service.interceptors.response.use(
     return Promise.reject(error)
   },
 )
+
+/** 优先展示语义 error_code（CompileReject）与可读 message。 */
+function formatApiError(body: ApiResponse<unknown>): string {
+  const code = body.code && body.code !== 'OK' ? body.code : ''
+  const msg = body.message || '请求失败'
+  if (!code) {
+    return msg
+  }
+  return msg.startsWith(code) ? msg : `${code}: ${msg}`
+}
 
 /**
  * 统一的类型化请求方法。响应拦截器已经把 ApiResponse 拆开、直接返回 data,

@@ -11,6 +11,7 @@ import com.datagov.metadata.entity.CatalogAssetEntities.CatalogColumn;
 import com.datagov.metadata.entity.CatalogAssetEntities.CatalogDataset;
 import com.datagov.metadata.entity.QualityEntities.QualityRule;
 import com.datagov.metadata.entity.QualityEntities.QualityRun;
+import com.datagov.metadata.event.QualityEvents;
 import com.datagov.metadata.mapper.CatalogColumnMapper;
 import com.datagov.metadata.mapper.CatalogDatasetMapper;
 import com.datagov.metadata.mapper.QualityRuleMapper;
@@ -57,6 +58,7 @@ public class QualityService {
     private final CatalogColumnMapper columnMapper;
     private final QualityRunner runner;
     private final ObjectMapper objectMapper;
+    private org.springframework.context.ApplicationEventPublisher events;
 
     public QualityService(QualityRuleMapper ruleMapper,
                           QualityRunMapper runMapper,
@@ -70,6 +72,11 @@ public class QualityService {
         this.columnMapper = columnMapper;
         this.runner = runner;
         this.objectMapper = objectMapper;
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    public void setEventPublisher(org.springframework.context.ApplicationEventPublisher events) {
+        this.events = events;
     }
 
     // ── DTO ─────────────────────────────────────────────────────────────
@@ -248,6 +255,18 @@ public class QualityService {
         run.setFinishedAt(finishedAt);
         run.setDurationMs(Math.max(0, finishedAt.toEpochMilli() - startedAt.toEpochMilli()));
         runMapper.updateById(run);
+        if (events != null) {
+            try {
+                events.publishEvent(new QualityEvents.QualityRunCompleted(
+                        run.getWorkspaceId(), run.getRuleId(), run.getDatasetId(),
+                        rule.getColumnId(), rule.getRuleType(), rule.getSeverity(),
+                        run.getStatus(), Boolean.TRUE.equals(run.getPassed()),
+                        run.getViolations(), readConfig(run.getMetricJson()), finishedAt));
+            } catch (RuntimeException ex) {
+                // 事件消费失败不能回滚已经落库的质检事实
+                log.warn("发布质检完成事件失败 rule={}", run.getRuleId(), ex);
+            }
+        }
         return toRunView(run, rule, dataset, column);
     }
 

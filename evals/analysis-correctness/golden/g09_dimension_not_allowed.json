@@ -1,0 +1,15 @@
+{
+  "id": "g09_dimension_not_allowed",
+  "kind": "gate",
+  "dialect": "POSTGRESQL",
+  "metric_code": "metric.order.gmv",
+  "metric_standard_ref": "STD-GMV",
+  "metric_spec": {
+    "allowedDimensions": ["attr.region"]
+  },
+  "dimensions": ["attr.forbidden"],
+  "allowed_datasets": ["ds1"],
+  "required_datasets": ["ds1"],
+  "max_rows": 200,
+  "expect_error": "DIMENSION_NOT_ALLOWED"
+}

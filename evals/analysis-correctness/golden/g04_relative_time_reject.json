@@ -1,0 +1,7 @@
+{
+  "id": "g04_relative_time_reject",
+  "kind": "gate",
+  "time_start": "上个季度",
+  "time_end": "今天",
+  "expect_error": "TIME_RANGE_NOT_NORMALIZED"
+}

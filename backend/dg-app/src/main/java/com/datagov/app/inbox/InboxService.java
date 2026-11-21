@@ -7,8 +7,12 @@ import com.datagov.common.error.ErrorCode;
 import com.datagov.common.id.Ids;
 import com.datagov.common.tenant.Caller;
 import com.datagov.common.tenant.WorkspaceContext;
+import com.datagov.app.insight.entity.AgentActionProposal;
+import com.datagov.app.insight.mapper.AgentActionProposalMapper;
 import com.datagov.governance.entity.GovernanceEntities.InboxState;
 import com.datagov.governance.mapper.InboxStateMapper;
+import com.datagov.runtime.entity.AutonomyRuntimeEntities.FlowInstance;
+import com.datagov.runtime.mapper.AuFlowInstanceMapper;
 import com.datagov.governance.service.AlertService;
 import com.datagov.governance.service.AlertService.AlertView;
 import com.datagov.metadata.service.SensitivityService;
@@ -40,6 +44,8 @@ public class InboxService {
     private static final String EXECUTION = "EXECUTION";
     private static final String ALERT = "ALERT";
     private static final String SENSITIVITY = "SENSITIVITY";
+    private static final String AUTONOMY = "AUTONOMY";
+    private static final String AUTONOMY_APPROVAL = "AUTONOMY_APPROVAL";
     private static final String OPEN = "OPEN";
     private static final String DISMISSED = "DISMISSED";
 
@@ -47,6 +53,12 @@ public class InboxService {
     private final AlertService alertService;
     private final SensitivityService sensitivityService;
     private final InboxStateMapper stateMapper;
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private AuFlowInstanceMapper flowInstanceMapper;
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private AgentActionProposalMapper proposalMapper;
 
     public InboxService(ExecutionService executionService,
                         AlertService alertService,
@@ -118,6 +130,42 @@ public class InboxService {
             truncated |= result.total() > result.records().size();
             for (SensitivityView label : result.records()) {
                 items.add(sensitivityItem(workspaceId, label, stateMap));
+            }
+        }
+
+        if ((sourceFilter == null || AUTONOMY.equals(sourceFilter))
+                && caller.hasPermission("autonomy:trace:read")
+                && flowInstanceMapper != null) {
+            for (FlowInstance instance : flowInstanceMapper.selectList(
+                    new LambdaQueryWrapper<FlowInstance>()
+                            .eq(FlowInstance::getWorkspaceId, workspaceId)
+                            .in(FlowInstance::getStatus, List.of("FAILED", "COMPENSATION_FAILED"))
+                            .orderByDesc(FlowInstance::getUpdatedAt)
+                            .last("LIMIT " + SOURCE_LIMIT))) {
+                String autonomySeverity = "COMPENSATION_FAILED".equals(instance.getStatus())
+                        ? "CRITICAL" : "HIGH";
+                items.add(item(AUTONOMY, instance.getId(), "自治流程 " + instance.getFlowCode(),
+                        instance.getErrorMessage() == null ? instance.getStatus() : instance.getErrorMessage(),
+                        autonomySeverity, instance.getFinishedAt(), instance.getStatus(),
+                        "/autonomy/traces?instanceId=" + instance.getId(), workspaceId, stateMap));
+            }
+        }
+
+        if ((sourceFilter == null || AUTONOMY_APPROVAL.equals(sourceFilter))
+                && caller.hasPermission("autonomy:flow:approve")
+                && proposalMapper != null) {
+            Instant now = Instant.now();
+            for (AgentActionProposal proposal : proposalMapper.selectList(
+                    new LambdaQueryWrapper<AgentActionProposal>()
+                            .eq(AgentActionProposal::getWorkspaceId, workspaceId)
+                            .eq(AgentActionProposal::getActionType, "AUTONOMY_FLOW_APPROVAL")
+                            .eq(AgentActionProposal::getStatus, "PENDING")
+                            .gt(AgentActionProposal::getExpiresAt, now)
+                            .orderByDesc(AgentActionProposal::getCreatedAt)
+                            .last("LIMIT " + SOURCE_LIMIT))) {
+                items.add(item(AUTONOMY_APPROVAL, proposal.getId(), proposal.getTitle(),
+                        proposal.getSummary(), "HIGH", proposal.getCreatedAt(), "待审批",
+                        "/autonomy/flows", workspaceId, stateMap));
             }
         }
 
@@ -242,29 +290,31 @@ public class InboxService {
         }
         String normalized = value.trim().toUpperCase(Locale.ROOT);
         if (EXECUTION.equals(normalized) || ALERT.equals(normalized)
-                || SENSITIVITY.equals(normalized)) {
+                || SENSITIVITY.equals(normalized) || AUTONOMY.equals(normalized)
+                || AUTONOMY_APPROVAL.equals(normalized)) {
             return normalized;
         }
         throw new BizException(ErrorCode.SYS_VALIDATION_FAILED,
-                "来源类型只能是 EXECUTION / ALERT / SENSITIVITY");
+                "来源类型只能是 EXECUTION / ALERT / SENSITIVITY / AUTONOMY / AUTONOMY_APPROVAL");
     }
 
     private static String normalizeSource(String value, boolean strict) {
         if (value == null || value.isBlank() || "ALL".equalsIgnoreCase(value.trim())) {
             if (strict) {
                 throw new BizException(ErrorCode.SYS_VALIDATION_FAILED,
-                        "来源类型只能是 EXECUTION / ALERT / SENSITIVITY");
+                        "来源类型只能是 EXECUTION / ALERT / SENSITIVITY / AUTONOMY / AUTONOMY_APPROVAL");
             }
             return null;
         }
         String normalized = value.trim().toUpperCase(Locale.ROOT);
         if (EXECUTION.equals(normalized) || ALERT.equals(normalized)
-                || SENSITIVITY.equals(normalized)) {
+                || SENSITIVITY.equals(normalized) || AUTONOMY.equals(normalized)
+                || AUTONOMY_APPROVAL.equals(normalized)) {
             return normalized;
         }
         if (strict) {
             throw new BizException(ErrorCode.SYS_VALIDATION_FAILED,
-                    "来源类型只能是 EXECUTION / ALERT / SENSITIVITY");
+                    "来源类型只能是 EXECUTION / ALERT / SENSITIVITY / AUTONOMY / AUTONOMY_APPROVAL");
         }
         return null;
     }
@@ -311,6 +361,8 @@ public class InboxService {
             case EXECUTION -> "runtime:execution:read";
             case ALERT -> "governance:alert:read";
             case SENSITIVITY -> "metadata:sensitivity:read";
+            case AUTONOMY -> "autonomy:trace:read";
+            case AUTONOMY_APPROVAL -> "autonomy:flow:approve";
             default -> null;
         };
         if (permission == null || !caller.hasPermission(permission)) {

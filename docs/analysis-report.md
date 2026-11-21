@@ -162,10 +162,13 @@ PUBLISHED ──AnalysisReportPublished──> UI / 后续 Intelligence
 
 ## 10. 演进位（契约预留，后续按需补迁移）
 
-- **可复现审计指纹（对齐 `CONSTITUTION.md` C8）**：在既有 `content_digest` 基础上扩展结构化 `reproducibility_fingerprint`（JSON），完整绑定：
+- **可复现审计指纹（对齐 `CONSTITUTION.md` C8）**：在既有 `content_digest` 基础上扩展结构化 `reproducibility_fingerprint`（JSON）。**同一 schema 为跨路径必选契约**：`AnalysisReport`、Insight 问数成功/拒绝、ClinicalOperator 输出、`OperationalReportRun` 快照均须绑定（见 `ARCHITECTURE.md` §1 元语与 `openspec/changes/analysis-hardening-clinical-foundation` W4）。完整绑定：
   - `datasourceSnapshots[]`：数据源与表快照/版本标识；
+  - `semanticObjectVersions[]`：所依赖语义对象版本与 `content_digest`；
   - `standardVersions[]`：所依赖的语义模型与 `Standard` 版本；
   - `operatorDigests[]`：执行的确定性规则、算子或 SQL 模板摘要；
+  - `gateDigest`：SemanticGate 配置/结果摘要；
+  - `truncation`：`truncated` / `maxRows` 等截断元数据；
   - `knowledgeRef`：引用的编译型知识库（`knowledge/`）Commit SHA 或 `Fact` 版本集；
   - `delegationChain`：人机操作委派链（发起人 `userId` → Agent NHI / `session_ref`）。
 - **分级模型路由校验（对齐 `CONSTITUTION.md` C5）**：当报告涉及 `max_sensitivity ≥ L3` 明细推理时，服务端校验 `model.endpointKind == SELF_HOSTED`，禁止未经脱敏的敏感明细经 `EXTERNAL` 模型产出结论。

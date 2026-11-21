@@ -100,8 +100,17 @@ public class AnalysisReportService {
             String sessionRef,
             String correlationId,
             String maxSensitivity,
-            Instant generatedAt
+            Instant generatedAt,
+            String reproducibilityFingerprint
     ) {
+        public PublishRequest(Subject subject, String title, String summary, String bodyMd,
+                              String conclusion, String insufficientReason,
+                              List<EvidenceInput> evidence, ModelInput model,
+                              String sessionRef, String correlationId,
+                              String maxSensitivity, Instant generatedAt) {
+            this(subject, title, summary, bodyMd, conclusion, insufficientReason,
+                    evidence, model, sessionRef, correlationId, maxSensitivity, generatedAt, null);
+        }
     }
 
     /** 发布新版本。subject/title 属于聚合根,不允许在修订里改。 */
@@ -114,8 +123,16 @@ public class AnalysisReportService {
             ModelInput model,
             String sessionRef,
             String maxSensitivity,
-            Instant generatedAt
+            Instant generatedAt,
+            String reproducibilityFingerprint
     ) {
+        public PublishVersionRequest(String summary, String bodyMd, String conclusion,
+                                     String insufficientReason, List<EvidenceInput> evidence,
+                                     ModelInput model, String sessionRef,
+                                     String maxSensitivity, Instant generatedAt) {
+            this(summary, bodyMd, conclusion, insufficientReason, evidence, model,
+                    sessionRef, maxSensitivity, generatedAt, null);
+        }
     }
 
     // ── 响应 DTO ────────────────────────────────────────────────────────
@@ -138,9 +155,17 @@ public class AnalysisReportService {
             String insufficientReason,
             String maxSensitivity,
             String contentDigest,
+            String reproducibilityFingerprint,
             Instant generatedAt,
             Instant createdAt
     ) {
+        public LatestView(String id, int version, Integer supersedesVersion, String status,
+                          String summary, ReportConclusion conclusion, String insufficientReason,
+                          String maxSensitivity, String contentDigest,
+                          Instant generatedAt, Instant createdAt) {
+            this(id, version, supersedesVersion, status, summary, conclusion, insufficientReason,
+                    maxSensitivity, contentDigest, null, generatedAt, createdAt);
+        }
     }
 
     public record VersionView(
@@ -158,10 +183,21 @@ public class AnalysisReportService {
             String sessionRef,
             String maxSensitivity,
             String contentDigest,
+            String reproducibilityFingerprint,
             Instant generatedAt,
             String createdBy,
             Instant createdAt
     ) {
+        public VersionView(String id, int version, Integer supersedesVersion, String status,
+                           String summary, String bodyMd, ReportConclusion conclusion,
+                           String insufficientReason, List<AnalysisReportPolicy.Evidence> evidence,
+                           AnalysisReportPolicy.ModelInfo model, String sessionRef,
+                           String maxSensitivity, String contentDigest,
+                           Instant generatedAt, String createdBy, Instant createdAt) {
+            this(id, version, supersedesVersion, status, summary, bodyMd, conclusion,
+                    insufficientReason, evidence, model, sessionRef, maxSensitivity,
+                    contentDigest, null, generatedAt, createdBy, createdAt);
+        }
     }
 
     /**
@@ -224,7 +260,8 @@ public class AnalysisReportService {
             return detail(existing);
         }
 
-        AnalysisReportVersion version = newVersion(report, content, 1, null, operator, now);
+        AnalysisReportVersion version = newVersion(report, content, 1, null, operator, now,
+                normalizeFingerprint(request.reproducibilityFingerprint()));
         versionMapper.insert(version);
         events.publishEvent(new GovernanceEvents.AnalysisReportPublished(
                 workspaceId, report.getId(), 1, now));
@@ -263,7 +300,8 @@ public class AnalysisReportService {
             if (reportMapper.compareAndBumpVersion(reportId, workspaceId, expected, next) == 1) {
                 Instant now = Instant.now();
                 AnalysisReportVersion version = newVersion(report, content, next,
-                        expected == 0 ? null : expected, operator, now);
+                        expected == 0 ? null : expected, operator, now,
+                        normalizeFingerprint(request.reproducibilityFingerprint()));
                 versionMapper.insert(version);
                 report.setLatestVersion(next);
                 events.publishEvent(new GovernanceEvents.AnalysisReportPublished(
@@ -423,7 +461,8 @@ public class AnalysisReportService {
     private AnalysisReportVersion newVersion(AnalysisReport report,
                                              AnalysisReportPolicy.Content content,
                                              int version, Integer supersedes,
-                                             String operator, Instant now) {
+                                             String operator, Instant now,
+                                             String reproducibilityFingerprint) {
         AnalysisReportVersion entity = new AnalysisReportVersion();
         entity.setId(Ids.of("arptv"));
         entity.setReportId(report.getId());
@@ -439,10 +478,51 @@ public class AnalysisReportService {
         entity.setSessionRef(content.sessionRef());
         entity.setMaxSensitivity(content.maxSensitivity());
         entity.setContentDigest(AnalysisReportPolicy.digest(content));
+        entity.setReproducibilityFingerprint(reproducibilityFingerprint);
         entity.setGeneratedAt(content.generatedAt());
         entity.setCreatedBy(operator);
         entity.setCreatedAt(now);
         return entity;
+    }
+
+    /**
+     * 若调用方提供指纹 JSON，则按 W4 schema 做完整性校验；缺字段直接拒绝。
+     */
+    private String normalizeFingerprint(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        try {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> map = objectMapper.readValue(raw, Map.class);
+            Object schemaVersion = map.get("schemaVersion");
+            int version = schemaVersion instanceof Number n ? n.intValue() : Integer.parseInt(String.valueOf(schemaVersion));
+            @SuppressWarnings("unchecked")
+            List<Map<String, String>> ds = (List<Map<String, String>>) map.getOrDefault("datasourceSnapshots", List.of());
+            @SuppressWarnings("unchecked")
+            List<Map<String, String>> sem = (List<Map<String, String>>) map.getOrDefault("semanticObjectVersions", List.of());
+            @SuppressWarnings("unchecked")
+            List<Map<String, String>> std = (List<Map<String, String>>) map.getOrDefault("standardVersions", List.of());
+            @SuppressWarnings("unchecked")
+            List<Map<String, String>> ops = (List<Map<String, String>>) map.getOrDefault("operatorDigests", List.of());
+            @SuppressWarnings("unchecked")
+            List<Map<String, String>> chain = (List<Map<String, String>>) map.getOrDefault("delegationChain", List.of());
+            @SuppressWarnings("unchecked")
+            Map<String, Object> truncation = (Map<String, Object>) map.getOrDefault("truncation", Map.of());
+            com.datagov.common.audit.ReproducibilityFingerprint fp =
+                    new com.datagov.common.audit.ReproducibilityFingerprint(
+                            version, ds, sem, std, ops,
+                            Objects.toString(map.get("sqlDigest"), ""),
+                            Objects.toString(map.get("gateDigest"), ""),
+                            chain, truncation,
+                            Objects.toString(map.get("compiledAt"), ""));
+            fp.requireComplete();
+            return objectMapper.writeValueAsString(map);
+        } catch (BizException ex) {
+            throw ex;
+        } catch (Exception ex) {
+            throw invalid("reproducibility_fingerprint 无效: " + ex.getMessage());
+        }
     }
 
     private ReportView detail(AnalysisReport report) {
@@ -520,6 +600,7 @@ public class AnalysisReportService {
                 version.getInsufficientReason(),
                 version.getMaxSensitivity(),
                 version.getContentDigest(),
+                version.getReproducibilityFingerprint(),
                 version.getGeneratedAt(),
                 version.getCreatedAt());
     }
@@ -540,6 +621,7 @@ public class AnalysisReportService {
                 version.getSessionRef(),
                 version.getMaxSensitivity(),
                 version.getContentDigest(),
+                version.getReproducibilityFingerprint(),
                 version.getGeneratedAt(),
                 version.getCreatedBy(),
                 version.getCreatedAt());

@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
+import { etlApi } from '@/api/etl'
 import { executionApi } from '@/api/job'
+import { useAuthStore } from '@/stores/auth'
 import { confirmAction } from '@/utils/confirm'
 import { formatDateTime } from '@/utils/format'
 import {
@@ -10,6 +12,7 @@ import {
   formatRows,
   isTerminal,
 } from '@/utils/job-status'
+import type { EtlBadRowBatch } from '@/types/etl'
 import type {
   Execution,
   ExecutionDetail,
@@ -40,6 +43,42 @@ const query = reactive({
 
 const detailVisible = ref(false)
 const detail = ref<ExecutionDetail | null>(null)
+
+// ── ETL 脏数据摘要(P2-1b)────────────────────────────────────────
+// 只对 ETL_PIPELINE 的执行展示,且需要 control:etl:read。后端只存计数 / 错误类别样例 / 死信引用,
+// 没有行内容,所以这里也只展示这些。
+const auth = useAuthStore()
+const canReadEtl = computed(
+  () => auth.hasPermission('control:etl:read') || auth.hasPermission('control:etl:manage'),
+)
+const isEtlDetail = computed(() => detail.value?.execution.jobRefType === 'ETL_PIPELINE')
+const badRows = ref<EtlBadRowBatch[]>([])
+const badRowsLoading = ref(false)
+const badRowsError = ref('')
+const badRowTotal = computed(() => badRows.value.reduce((sum, b) => sum + b.badRowCount, 0))
+
+async function loadBadRows(executionId: string) {
+  badRows.value = []
+  badRowsError.value = ''
+  badRowsLoading.value = true
+  try {
+    badRows.value = await etlApi.badRows(executionId)
+  } catch (e) {
+    badRowsError.value = (e as { message?: string })?.message ?? '脏数据摘要加载失败'
+  } finally {
+    badRowsLoading.value = false
+  }
+}
+
+/** 摘要里的样例是后端已清洗的 JSON;解析失败(被截断)就原样显示。 */
+function formatSample(raw: string | null): string {
+  if (!raw) return ''
+  try {
+    return JSON.stringify(JSON.parse(raw), null, 2)
+  } catch {
+    return raw
+  }
+}
 
 /** 有未结束的执行时才轮询。全都跑完了还在轮询是纯粹的浪费。 */
 const pollTimer = ref<number | null>(null)
@@ -111,7 +150,12 @@ onUnmounted(() => {
 
 async function onDetail(row: Execution) {
   detail.value = await executionApi.get(row.id)
+  badRows.value = []
+  badRowsError.value = ''
   detailVisible.value = true
+  if (detail.value.execution.jobRefType === 'ETL_PIPELINE' && canReadEtl.value) {
+    void loadBadRows(row.id)
+  }
 }
 
 async function onCancel(row: Execution) {
@@ -359,6 +403,50 @@ function attemptSummary(d: ExecutionDetail): string {
           </el-table-column>
           <el-table-column prop="message" label="结果" min-width="200" show-overflow-tooltip />
         </el-table>
+
+        <!-- ETL 脏数据批次摘要:只有计数、错误类别样例与死信引用,不含行内容 -->
+        <template v-if="isEtlDetail && canReadEtl">
+          <h4 style="margin-top: 20px">
+            脏数据摘要
+            <el-tag v-if="badRowTotal > 0" type="warning" size="small">共 {{ badRowTotal }} 行</el-tag>
+          </h4>
+          <el-alert v-if="badRowsError" type="error" :closable="false" show-icon :title="badRowsError" />
+          <el-table
+            v-else
+            :data="badRows"
+            v-loading="badRowsLoading"
+            size="small"
+            border
+            row-key="id"
+          >
+            <el-table-column type="expand">
+              <template #default="{ row }">
+                <pre v-if="(row as EtlBadRowBatch).sampleErrorJson" class="error-detail">{{
+                  formatSample((row as EtlBadRowBatch).sampleErrorJson)
+                }}</pre>
+                <span v-else class="text-muted">没有错误样例</span>
+              </template>
+            </el-table-column>
+            <el-table-column prop="nodeId" label="节点" width="140" />
+            <el-table-column label="坏行数" width="100">
+              <template #default="{ row }">{{ (row as EtlBadRowBatch).badRowCount }}</template>
+            </el-table-column>
+            <el-table-column label="死信引用" min-width="200" show-overflow-tooltip>
+              <template #default="{ row }">
+                <span v-if="(row as EtlBadRowBatch).storageRef" class="text-mono">
+                  {{ (row as EtlBadRowBatch).storageRef }}
+                </span>
+                <span v-else class="text-muted">未保留行本体</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="记录时间" width="170">
+              <template #default="{ row }">{{ formatDateTime((row as EtlBadRowBatch).createdAt) }}</template>
+            </el-table-column>
+            <template #empty>
+              <span class="text-muted">本次执行没有脏数据记录(坏行策略为 FAIL_FAST,或没有坏行)</span>
+            </template>
+          </el-table>
+        </template>
 
         <template v-for="attempt in detail.attempts" :key="attempt.id">
           <div v-if="attempt.errorDetail" style="margin-top: 12px">

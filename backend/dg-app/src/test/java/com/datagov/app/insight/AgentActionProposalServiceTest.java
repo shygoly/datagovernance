@@ -19,6 +19,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
@@ -58,6 +59,7 @@ class AgentActionProposalServiceTest {
             return 1;
         }).when(mapper).updateById(any(AgentActionProposal.class));
         when(mapper.selectById(any())).thenAnswer(inv -> store.get(inv.getArgument(0)));
+        when(mapper.selectList(any())).thenAnswer(inv -> new ArrayList<>(store.values()));
 
         controlPlane = mock(AgentControlPlaneService.class);
         when(controlPlane.requireSafeRootPath(any())).thenAnswer(inv -> inv.getArgument(0));
@@ -77,6 +79,41 @@ class AgentActionProposalServiceTest {
     @AfterEach
     void tearDown() {
         WorkspaceContext.clear();
+    }
+
+    @Test
+    @DisplayName("P1-9：自治审批跨用户可见，确认后只向 DurableFlowEngine 发信号")
+    void autonomyApprovalWakesFlow() {
+        AutonomyApprovalExecutor executor = mock(AutonomyApprovalExecutor.class);
+        when(executor.execute(any())).thenReturn(Map.of("instanceId", "afi_1", "status", "RUNNING"));
+        service.setAutonomyApprovalExecutor(executor);
+
+        WorkspaceContext.set(new Caller("usr_approver", "approver", "ws_1", false,
+                Set.of("autonomy:flow:approve")));
+        when(permissionService.resolvePermissions("usr_approver", "ws_1"))
+                .thenReturn(Set.of("autonomy:flow:approve"));
+        AgentActionProposal proposal = new AgentActionProposal();
+        proposal.setId("agpr_auto");
+        proposal.setWorkspaceId("ws_1");
+        proposal.setUserId("usr_alice");
+        proposal.setUsername("alice");
+        proposal.setActionType(AgentActionProposalService.ACTION_AUTONOMY_FLOW_APPROVAL);
+        proposal.setRequiredPerm(AgentActionProposalService.PERM_AUTONOMY_APPROVE);
+        proposal.setTitle("自治流程审批");
+        proposal.setSummary("请求暂停同步任务");
+        proposal.setPayloadJson("{\"instanceId\":\"afi_1\",\"stepId\":\"s5\"}");
+        proposal.setPayloadDigest("a".repeat(64));
+        proposal.setRiskLevel("HIGH");
+        proposal.setStatus(AgentActionProposalService.STATUS_PENDING);
+        proposal.setExpiresAt(Instant.now().plusSeconds(3600));
+        proposal.setCreatedAt(Instant.now());
+        proposal.setUpdatedAt(Instant.now());
+        store.put(proposal.getId(), proposal);
+
+        assertThat(service.listAutonomyPending()).hasSize(1);
+        ProposalView view = service.confirmAutonomyProposal(proposal.getId(), proposal.getPayloadDigest(), "同意");
+        assertThat(view.status()).isEqualTo(AgentActionProposalService.STATUS_EXECUTED);
+        verify(executor).execute(any());
     }
 
     @Test

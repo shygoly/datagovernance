@@ -197,7 +197,7 @@ public class ApiParseRunner implements JobRunner {
      * <p>三种方式对应 {@code CredentialSecret.AuthType}:无认证、Basic、Token。
      * 具体用哪一种由数据源绑定的凭据决定,这里只负责翻译成 HTTP 头。
      */
-    private void applyAuth(HttpRequest.Builder builder, ConnectionConfig config) {
+    static void applyAuth(HttpRequest.Builder builder, ConnectionConfig config) {
         if (config.password() == null || config.password().isBlank()) {
             return;
         }

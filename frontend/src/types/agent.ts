@@ -10,6 +10,25 @@ export interface AgentToolStep {
   finishedAt?: string
 }
 
+export interface CompileRejectInfo {
+  errorCode: string
+  message: string
+  repairHint?: string
+  location?: string
+  allowed?: string[]
+}
+
+export type AgentUiBlockComponent =
+  | 'FilterFunnelCard'
+  | 'DistributionProfileCard'
+  | 'RuleDiffProposalCard'
+
+export interface AgentUiBlock {
+  component: AgentUiBlockComponent
+  version: '1'
+  props: Record<string, unknown>
+}
+
 export interface AgentTurn {
   id: string
   question: string
@@ -18,8 +37,10 @@ export interface AgentTurn {
   text: string
   thinking: string
   tools: AgentToolStep[]
+  uiBlocks?: AgentUiBlock[]
   answer?: InsightAnswer
   error?: string
+  compileReject?: CompileRejectInfo | null
   createdAt: string
   finishedAt?: string
 }

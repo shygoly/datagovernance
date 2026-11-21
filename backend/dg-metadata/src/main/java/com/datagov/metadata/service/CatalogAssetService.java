@@ -11,6 +11,7 @@ import com.datagov.data.spi.ConnectionConfig;
 import com.datagov.data.spi.ConnectorCapabilities;
 import com.datagov.data.spi.DataAccessGateway;
 import com.datagov.data.spi.DataSourceType;
+import com.datagov.data.spi.catalog.CatalogModel;
 import com.datagov.data.spi.catalog.CatalogModel.CatalogPage;
 import com.datagov.data.spi.catalog.CatalogModel.ColumnInfo;
 import com.datagov.data.spi.catalog.CatalogModel.DatabaseInfo;
@@ -40,8 +41,10 @@ import com.datagov.metadata.mapper.CatalogSourceMapper;
 import com.datagov.metadata.spi.CredentialResolver;
 import com.datagov.metadata.spi.ResolvedSecret;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.datagov.metadata.service.lineage.SqlLineageService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -88,6 +91,12 @@ public class CatalogAssetService {
     private final CredentialResolver credentialResolver;
     private final ObjectMapper objectMapper;
 
+    /**
+     * 视图血缘采集(column-lineage-e2e P1-8)。用 setter 可选注入而不是构造器参数:
+     * 它是「采集完顺带做的锦上添花」，缺席(单测、精简装配)时目录采集必须照常工作。
+     */
+    private SqlLineageService sqlLineageService;
+
     public CatalogAssetService(CatalogSourceMapper sourceMapper,
                                CatalogNamespaceMapper namespaceMapper,
                                CatalogDatasetMapper datasetMapper,
@@ -114,6 +123,11 @@ public class CatalogAssetService {
         this.assembler = assembler;
         this.credentialResolver = credentialResolver;
         this.objectMapper = objectMapper;
+    }
+
+    @Autowired(required = false)
+    public void setSqlLineageService(SqlLineageService sqlLineageService) {
+        this.sqlLineageService = sqlLineageService;
     }
 
     // ── DTO ─────────────────────────────────────────────────────────────
@@ -751,7 +765,31 @@ public class CatalogAssetService {
 
         replaceColumns(entity.getId(), columns);
         recordSchemaVersion(entity.getId(), schemaHash, columns, oldHash);
+        recordViewLineage(source, entity, table, database, schema);
         return entity;
+    }
+
+    /**
+     * VIEW / MATERIALIZED_VIEW 且连接器给出了定义时，解析其列级血缘并写 {@code jobType=VIEW}
+     * 的 ACTIVE 边。血缘失败(sidecar 不可达、写入异常)<b>绝不</b>影响目录采集本身：
+     * 解析侧自己会降级为 INCONCLUSIVE，这里只兜住意料之外的异常。
+     */
+    private void recordViewLineage(CatalogSource source, CatalogDataset dataset, TableInfo table,
+                                   String database, String schema) {
+        if (sqlLineageService == null || table.viewDefinition() == null
+                || table.viewDefinition().isBlank()
+                || (table.kind() != CatalogModel.TableKind.VIEW
+                && table.kind() != CatalogModel.TableKind.MATERIALIZED_VIEW)) {
+            return;
+        }
+        try {
+            String viewName = schema == null ? table.name() : schema + "." + table.name();
+            sqlLineageService.recordView(dataset.getId(), dataset.getQualifiedName(), viewName,
+                    table.viewDefinition(), source.getDataSourceId(), database, schema);
+        } catch (RuntimeException ex) {
+            log.warn("视图血缘采集失败(已忽略) dataset={} err={}", dataset.getQualifiedName(),
+                    ex.getMessage());
+        }
     }
 
     private void upsertParquetDataset(CatalogSource source, CatalogNamespace namespace,

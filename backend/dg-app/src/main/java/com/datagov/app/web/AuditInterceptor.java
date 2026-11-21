@@ -38,6 +38,8 @@ public class AuditInterceptor implements HandlerInterceptor {
      * <p>顺序有意义:先匹配更长的前缀。用 List 而不是 Map 就是为了保住这个顺序。
      */
     private static final List<Map.Entry<String, String[]>> RESOURCE_MAP = List.of(
+            // 血缘写入(含 OpenLineage Webhook)：必须排在 /jobs 之前，否则会被误记成控制面 JOB
+            Map.entry("/metadata/lineage", new String[]{"LINEAGE", "METADATA"}),
             Map.entry("/streaming-jobs", new String[]{"STREAMING_JOB", "CONTROL"}),
             Map.entry("/jobs/catalog", new String[]{"TASK_CATALOG", "CONTROL"}),
             Map.entry("/jobs", new String[]{"JOB", "CONTROL"}),

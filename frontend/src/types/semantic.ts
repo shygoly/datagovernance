@@ -6,6 +6,8 @@ export type SemanticObjectType =
   | 'METRIC'
   | 'CONCEPT'
   | 'PROCESS'
+  | 'TARGET'
+  | 'ACTION_TYPE'
 
 export type SemanticStatus = 'DRAFT' | 'PROPOSED' | 'PUBLISHED' | 'DEPRECATED' | 'REJECTED'
 
@@ -42,6 +44,9 @@ export interface SemanticObject {
   mappingCount: number
   linkCount: number
   scope?: SemanticScope
+  provenance?: Record<string, unknown>
+  verified?: Record<string, unknown>
+  requiresHumanReview?: boolean
 }
 
 export interface SemanticObjectPayload {
@@ -221,6 +226,19 @@ export interface SemanticQuerySpec {
   limit?: number
 }
 
+export interface ReproducibilityFingerprint {
+  schemaVersion: number
+  datasourceSnapshots: Array<Record<string, string>>
+  semanticObjectVersions: Array<Record<string, string>>
+  standardVersions: Array<Record<string, string>>
+  operatorDigests: Array<Record<string, string>>
+  sqlDigest: string
+  gateDigest: string
+  delegationChain: Array<Record<string, string>>
+  truncation: Record<string, unknown>
+  compiledAt: string
+}
+
 export interface CompiledSemanticQuery {
   sql: string
   dialect: string
@@ -232,6 +250,7 @@ export interface CompiledSemanticQuery {
   appliedExclusions: string[]
   fanoutCteUsed: boolean
   warnings: string[]
+  reproducibilityFingerprint?: ReproducibilityFingerprint | null
 }
 
 export interface SemanticPage<T> {
